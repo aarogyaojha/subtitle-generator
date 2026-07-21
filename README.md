@@ -1,6 +1,11 @@
 # Subtitle Generator
 
+[![GitHub Repository](https://img.shields.io/badge/GitHub-aarogyaojha%2Fsubtitle--generator-blue?logo=github)](https://github.com/aarogyaojha/subtitle-generator)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 An open-source AI subtitle generation pipeline engineered to solve common failure modes present in existing speech recognition tools: hallucinated or repeated text during silence, duplicate text at chunk boundaries, dropped text under background noise, and context-dependent word-sense ambiguity.
+
+**Repository URL:** [https://github.com/aarogyaojha/subtitle-generator](https://github.com/aarogyaojha/subtitle-generator)
 
 ---
 
