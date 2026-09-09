@@ -46,6 +46,7 @@ transformers/
 *.mkv
 *.srt
 *.vtt
+!tests/fixtures/**
 
 # IDEs and OS files
 .vscode/
