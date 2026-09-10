@@ -69,8 +69,15 @@ def load_stage_config(
                     resolved[key] = cfg[key]
 
         # 2. Merge section-level keys if specified (overrides top-level)
+        # Supports nested dot-separated paths (e.g. "format.language_overrides.ja")
         if section_name:
-            section_cfg = cfg.get(section_name, {})
+            section_cfg: Any = cfg
+            for part in section_name.split("."):
+                if isinstance(section_cfg, dict):
+                    section_cfg = section_cfg.get(part, {})
+                else:
+                    section_cfg = {}
+                    break
             if isinstance(section_cfg, dict):
                 for key, val in section_cfg.items():
                     if val is not None:

@@ -107,3 +107,35 @@ def test_invalid_yaml_structure_fallback(tmp_path: Path, caplog: pytest.LogCaptu
     result = load_stage_config(config_path=config_file, section_name="vad", defaults=defaults)
     assert result == defaults
     assert "Invalid configuration structure" in caplog.text
+
+
+def test_nested_section_lookup(tmp_path: Path):
+    """Verify that dot-separated nested section names correctly resolve nested config dictionaries."""
+    config_file = tmp_path / "config.yaml"
+    config_data = {
+        "format": {
+            "language_overrides": {
+                "ja": {
+                    "max_chars_per_line": 13,
+                    "max_cps": 4.0,
+                }
+            }
+        }
+    }
+    with open(config_file, "w", encoding="utf-8") as f:
+        yaml.safe_dump(config_data, f)
+
+    defaults = {
+        "max_chars_per_line": 42,
+        "max_lines_per_cue": 2,
+        "max_cps": 17.0,
+    }
+    result = load_stage_config(
+        config_path=config_file,
+        section_name="format.language_overrides.ja",
+        defaults=defaults,
+    )
+    assert result["max_chars_per_line"] == 13
+    assert result["max_cps"] == 4.0
+    assert result["max_lines_per_cue"] == 2
+
