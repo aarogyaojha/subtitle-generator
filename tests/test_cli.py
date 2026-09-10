@@ -32,11 +32,12 @@ def test_build_parser_defaults():
     assert args.output_dir is None
     assert args.config == str(DEFAULT_CONFIG_PATH)
     assert args.hardware_tier is None
+    assert args.language is None
     assert args.include_speaker is True
 
 
 def test_build_parser_options_and_boolean_flag():
-    """Verify custom CLI options and --no-speaker toggle."""
+    """Verify custom CLI options, language override, and --no-speaker toggle."""
     parser = build_parser()
     args = parser.parse_args(
         [
@@ -47,6 +48,8 @@ def test_build_parser_options_and_boolean_flag():
             "custom_config.yaml",
             "-t",
             "local",
+            "-l",
+            "ja",
             "--no-speaker",
         ]
     )
@@ -55,6 +58,7 @@ def test_build_parser_options_and_boolean_flag():
     assert args.output_dir == "custom_output"
     assert args.config == "custom_config.yaml"
     assert args.hardware_tier == "local"
+    assert args.language == "ja"
     assert args.include_speaker is False
 
 
@@ -98,6 +102,30 @@ def test_cli_dispatches_to_run_pipeline(mock_run_pipeline, tmp_path):
         config_path=dummy_config,
         output_dir=dummy_out,
         hardware_tier="colab",
+        language=None,
+        include_speaker=True,
+    )
+
+
+@patch("src.cli.run_pipeline")
+def test_cli_dispatches_with_language_override(mock_run_pipeline, tmp_path):
+    """Verify main() forwards the --language / -l CLI flag to run_pipeline()."""
+    dummy_input = tmp_path / "audio.wav"
+    mock_run_pipeline.return_value = {
+        "cue_count": 2,
+        "speaker_turns": [],
+        "srt_path": "output/audio.srt",
+        "vtt_path": "output/audio.vtt",
+    }
+
+    exit_code = main([str(dummy_input), "-l", "ja"])
+    assert exit_code == 0
+    mock_run_pipeline.assert_called_once_with(
+        input_path=dummy_input,
+        config_path=DEFAULT_CONFIG_PATH,
+        output_dir=None,
+        hardware_tier=None,
+        language="ja",
         include_speaker=True,
     )
 

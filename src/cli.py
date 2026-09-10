@@ -8,6 +8,7 @@ Options:
   -o, --output-dir      Directory to save output .srt/.vtt files.
   -c, --config          Path to config.yaml configuration file.
   -t, --hardware-tier   Hardware tier override ('colab', 'local').
+  -l, --language        Language code override (e.g. 'ne', 'ja').
   --include-speaker / --no-speaker
                         Toggle speaker labels in output subtitles (default: True).
 """
@@ -63,6 +64,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Hardware tier override ('colab' for large-v3, 'local' for 4GB VRAM cards).",
     )
     parser.add_argument(
+        "-l",
+        "--language",
+        type=str,
+        default=None,
+        help="Language code override (e.g. 'ne', 'ja'). If omitted, reads from config.yaml.",
+    )
+    parser.add_argument(
         "--speaker",
         "--include-speaker",
         dest="include_speaker",
@@ -94,6 +102,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"Subtitle Generator — Starting processing for: {input_path}")
     if args.hardware_tier:
         print(f"Hardware tier override: {args.hardware_tier}")
+    if args.language:
+        print(f"Language override: {args.language}")
 
     try:
         summary = run_pipeline(
@@ -101,6 +111,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             config_path=config_path,
             output_dir=output_dir,
             hardware_tier=args.hardware_tier,
+            language=args.language,
             include_speaker=args.include_speaker,
         )
 

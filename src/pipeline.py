@@ -166,6 +166,7 @@ def run_pipeline(
     config_path: Union[str, Path] = DEFAULT_CONFIG_PATH,
     output_dir: Optional[Union[str, Path]] = None,
     hardware_tier: Optional[str] = None,
+    language: Optional[str] = None,
     include_speaker: bool = True,
 ) -> dict[str, Any]:
     """
@@ -184,6 +185,7 @@ def run_pipeline(
         config_path: Path to config.yaml (passed through to each stage call).
         output_dir: Directory where .srt and .vtt files are saved. Defaults to PROJECT_ROOT / "output".
         hardware_tier: Optional hardware tier override ('colab', 'local'). If None, reads from config_path.
+        language: Optional language code override (e.g. 'ne', 'ja'). If None, falls back to config.yaml.
         include_speaker: Whether to include speaker labels in output subtitle files.
 
     Returns:
@@ -251,6 +253,7 @@ def run_pipeline(
         transcript_segments = asr.transcribe(
             audio_path=resolved_audio_path,
             speech_regions=speech_regions,
+            language=language,
             config_path=config_path,
             **asr_overrides,
         )
@@ -275,6 +278,7 @@ def run_pipeline(
         cues = fmt.create_cues(
             transcript_segments=merged_segments,
             config_path=config_path,
+            language=language,
         )
 
         out_directory = Path(output_dir).resolve() if output_dir is not None else (PROJECT_ROOT / "output")

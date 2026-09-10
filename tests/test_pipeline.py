@@ -23,6 +23,8 @@ from src.pipeline import (
 
 FIXTURES_DIR = PROJECT_ROOT / "tests" / "fixtures"
 NEPALI_AUDIO_FIXTURE = FIXTURES_DIR / "nepali_sample.wav"
+JAPANESE_AUDIO_FIXTURE = FIXTURES_DIR / "japanese_sample.wav"
+
 
 
 def test_is_video_file():
@@ -227,6 +229,7 @@ def test_pipeline_execution_order_and_audio_path_consistency(
     mock_asr.assert_called_once_with(
         audio_path=dummy_audio.resolve(),
         speech_regions=[(0.0, 2.0)],
+        language=None,
         config_path=DEFAULT_CONFIG_PATH,
         model_size_or_path="medium",
         compute_type="int8",
@@ -246,6 +249,7 @@ def test_pipeline_execution_order_and_audio_path_consistency(
     mock_create_cues.assert_called_once_with(
         transcript_segments=mock_merge.return_value,
         config_path=DEFAULT_CONFIG_PATH,
+        language=None,
     )
 
     # 6. Check SRT and VTT writers called
@@ -353,6 +357,105 @@ def test_video_input_extracts_audio_and_cleans_up_temp_file(
     assert summary["input_path"] == str(dummy_video.resolve())
 
 
+@patch("src.pipeline.fmt.write_vtt")
+@patch("src.pipeline.fmt.write_srt")
+@patch("src.pipeline.fmt.create_cues")
+@patch("src.pipeline.diarize.merge_with_transcript")
+@patch("src.pipeline.diarize.diarize")
+@patch("src.pipeline.asr.transcribe")
+@patch("src.pipeline.vad.get_speech_regions")
+@patch("src.pipeline.diarize.load_diarization_pipeline")
+def test_pipeline_language_override_passthrough(
+    mock_load_diarization,
+    mock_vad,
+    mock_asr,
+    mock_diarize,
+    mock_merge,
+    mock_create_cues,
+    mock_write_srt,
+    mock_write_vtt,
+    tmp_path,
+):
+    """Verify that an explicit language parameter to run_pipeline() is forwarded to both ASR and format stages."""
+    dummy_audio = tmp_path / "japanese.wav"
+    dummy_audio.write_bytes(b"RIFF dummy audio content")
+
+    mock_vad.return_value = [(0.0, 3.5)]
+    mock_asr.return_value = [{"start": 0.0, "end": 3.5, "text": "テスト"}]
+    mock_diarize.return_value = []
+    mock_merge.return_value = [{"start": 0.0, "end": 3.5, "text": "テスト", "speaker_id": None}]
+    mock_create_cues.return_value = []
+
+    run_pipeline(
+        input_path=dummy_audio,
+        output_dir=tmp_path / "out",
+        language="ja",
+    )
+
+    mock_asr.assert_called_once_with(
+        audio_path=dummy_audio.resolve(),
+        speech_regions=[(0.0, 3.5)],
+        language="ja",
+        config_path=DEFAULT_CONFIG_PATH,
+        model_size_or_path="large-v3",
+        compute_type="int8",
+    )
+    mock_create_cues.assert_called_once_with(
+        transcript_segments=mock_merge.return_value,
+        config_path=DEFAULT_CONFIG_PATH,
+        language="ja",
+    )
+
+
+@patch("src.pipeline.fmt.write_vtt")
+@patch("src.pipeline.fmt.write_srt")
+@patch("src.pipeline.fmt.create_cues")
+@patch("src.pipeline.diarize.merge_with_transcript")
+@patch("src.pipeline.diarize.diarize")
+@patch("src.pipeline.asr.transcribe")
+@patch("src.pipeline.vad.get_speech_regions")
+@patch("src.pipeline.diarize.load_diarization_pipeline")
+def test_pipeline_default_language_fallback_passthrough(
+    mock_load_diarization,
+    mock_vad,
+    mock_asr,
+    mock_diarize,
+    mock_merge,
+    mock_create_cues,
+    mock_write_srt,
+    mock_write_vtt,
+    tmp_path,
+):
+    """Verify that omitting language forwards language=None, allowing ASR and format to fall back to config.yaml."""
+    dummy_audio = tmp_path / "default.wav"
+    dummy_audio.write_bytes(b"RIFF dummy audio content")
+
+    mock_vad.return_value = []
+    mock_asr.return_value = []
+    mock_diarize.return_value = []
+    mock_merge.return_value = []
+    mock_create_cues.return_value = []
+
+    run_pipeline(
+        input_path=dummy_audio,
+        output_dir=tmp_path / "out",
+    )
+
+    mock_asr.assert_called_once_with(
+        audio_path=dummy_audio.resolve(),
+        speech_regions=[],
+        language=None,
+        config_path=DEFAULT_CONFIG_PATH,
+        model_size_or_path="large-v3",
+        compute_type="int8",
+    )
+    mock_create_cues.assert_called_once_with(
+        transcript_segments=[],
+        config_path=DEFAULT_CONFIG_PATH,
+        language=None,
+    )
+
+
 @pytest.mark.skipif(
     not NEPALI_AUDIO_FIXTURE.exists(),
     reason="Real Nepali audio fixture required for full integration test",
@@ -402,3 +505,68 @@ def test_real_full_pipeline_nepali_integration(tmp_path):
     print("--- GENERATED VTT CONTENT ---")
     print(vtt_content)
     print("=" * 60 + "\n")
+
+
+@pytest.mark.skipif(
+    not JAPANESE_AUDIO_FIXTURE.exists(),
+    reason="Real Japanese audio fixture required for full integration test",
+)
+def test_real_full_pipeline_japanese_integration(tmp_path):
+    """
+    Real end-to-end integration test: runs the complete pipeline on tests/fixtures/japanese_sample.wav
+    with language="ja" using real model weights (no mocks), generates .srt and .vtt files,
+    and verifies output format and Japanese subtitle formatting.
+    """
+    out_dir = tmp_path / "japanese_subtitles_output"
+
+    summary = run_pipeline(
+        input_path=JAPANESE_AUDIO_FIXTURE,
+        output_dir=out_dir,
+        language="ja",
+        include_speaker=True,
+    )
+
+    srt_file = Path(summary["srt_path"])
+    vtt_file = Path(summary["vtt_path"])
+
+    assert srt_file.exists(), "SRT output file should exist"
+    assert vtt_file.exists(), "VTT output file should exist"
+
+    srt_content = srt_file.read_text(encoding="utf-8")
+    vtt_content = vtt_file.read_text(encoding="utf-8")
+
+    assert len(summary["cues"]) > 0, "Pipeline should generate at least one subtitle cue"
+    assert summary["cue_count"] == len(summary["cues"])
+    assert "-->" in srt_content
+    assert "WEBVTT" in vtt_content
+
+    # Verify Japanese formatting constraints
+    for cue in summary["cues"]:
+        for line in cue["lines"]:
+            assert len(line) <= 13, f"Line exceeds 13 characters in Japanese cue: '{line}' ({len(line)} chars)"
+        duration = cue["end"] - cue["start"]
+        text_len = len(cue["text"])
+        required_duration_by_cps = text_len / 4.0
+        assert duration >= (required_duration_by_cps - 1e-4), (
+            f"Cue duration {duration:.3f}s violates 4.0 CPS cap for text '{cue['text']}'"
+        )
+
+    # Print summary and output for inspection (visible with pytest -s)
+    print("\n" + "=" * 60)
+    print("PIPELINE END-TO-END JAPANESE INTEGRATION TEST RESULT")
+    print("=" * 60)
+    print(f"Input file:     {summary['input_path']}")
+    print(f"Resolved audio: {summary['audio_path']}")
+    print(f"Hardware tier:  {summary['hardware_tier']}")
+    print(f"VAD regions:    {len(summary['speech_regions'])}")
+    print(f"ASR segments:   {len(summary['segments'])}")
+    print(f"Speaker turns:  {len(summary['speaker_turns'])}")
+    print(f"Cue count:      {summary['cue_count']}")
+    print(f"SRT Path:       {summary['srt_path']}")
+    print(f"VTT Path:       {summary['vtt_path']}")
+    print("\n--- GENERATED SRT CONTENT ---")
+    print(srt_content)
+    print("--- GENERATED VTT CONTENT ---")
+    print(vtt_content)
+    print("=" * 60 + "\n")
+
