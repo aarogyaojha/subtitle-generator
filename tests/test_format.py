@@ -70,7 +70,206 @@ def test_wrap_text_line_length_and_lines_limit():
     assert wrap_text("   \n\t  ") == []
 
 
+def test_wrap_text_unbroken_token_no_fabricated_spaces():
+    """
+    Regression test: verify that a single unbroken token (e.g. CJK or long URL)
+    exceeding max_chars_per_line is split by character count with NO fabricated spaces.
+    """
+    # 1. Japanese sentence with no spaces (14 chars), max_chars_per_line=13, max_lines=2
+    ja_text = "新しい靴を履いて出かけます。"
+    lines_ja = wrap_text(ja_text, max_chars_per_line=13, max_lines_per_cue=2)
+    assert len(lines_ja) == 2
+    assert lines_ja[0] == "新しい靴を履いて出かけます"
+    assert lines_ja[1] == "。"
+    # Zero fabricated characters: joining lines back together produces the exact original text
+    assert "".join(lines_ja) == ja_text
+    assert all(" " not in line for line in lines_ja)
+
+
+    # 2. Long unbroken ASCII token (26 chars), max_chars_per_line=10, max_lines=3
+    ascii_token = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    lines_ascii = wrap_text(ascii_token, max_chars_per_line=10, max_lines_per_cue=3)
+    assert len(lines_ascii) == 3
+    assert lines_ascii[0] == "ABCDEFGHIJ"
+    assert lines_ascii[1] == "KLMNOPQRST"
+    assert lines_ascii[2] == "UVWXYZ"
+    assert "".join(lines_ascii) == ascii_token
+
+    # 3. Unbroken token longer than max_chars_per_line * max_lines_per_cue
+    lines_overflow = wrap_text(ascii_token, max_chars_per_line=10, max_lines_per_cue=2)
+    assert len(lines_overflow) == 2
+    assert lines_overflow[0] == "ABCDEFGHIJ"
+    assert lines_overflow[1] == "KLMNOPQRSTUVWXYZ"
+    assert "".join(lines_overflow) == ascii_token
+
+
+def test_cjk_unbroken_token_create_cues_exact_duration_and_no_space_corruption():
+    """
+    Regression test: verify create_cues preserves original token characters from Whisper word dicts
+    and computes CPS duration from the true content character count (not inflated by space insertion).
+    """
+    # Simulate Whisper subwords for Japanese text "新しい靴を履いて出かけます。" (14 chars)
+    words = [
+        {"word": " 新", "start": 0.8, "end": 1.14},
+        {"word": "しい", "start": 1.14, "end": 1.34},
+        {"word": " 靴", "start": 1.34, "end": 1.62},
+        {"word": "を", "start": 1.62, "end": 1.76},
+        {"word": " 履", "start": 1.76, "end": 2.02},
+        {"word": "いて", "start": 2.02, "end": 2.22},
+        {"word": " 出", "start": 2.22, "end": 2.36},
+        {"word": "か", "start": 2.36, "end": 2.40},
+        {"word": "け", "start": 2.40, "end": 2.44},
+        {"word": " ます。", "start": 2.44, "end": 2.48},
+    ]
+    segment = [
+        {
+            "start": 0.8,
+            "end": 2.48,
+            "text": "新しい靴を履いて出かけます。",
+            "words": words,
+            "speaker_id": "SPEAKER_00",
+        }
+    ]
+
+    cues = create_cues(segment, max_cps=4.0, max_chars_per_line=13, max_lines_per_cue=2)
+    assert len(cues) == 1
+    cue = cues[0]
+
+    # Content text must match original exactly
+    assert cue["text"] == "新しい靴を履いて出かけます。"
+    assert " " not in cue["text"]
+
+    # Lines must contain zero added characters
+    assert "".join(cue["lines"]) == "新しい靴を履いて出かけます。"
+
+    # Duration must be exactly len(text) / 4.0 = 14 / 4.0 = 3.5s (from start 0.8s -> end 4.3s)
+    expected_duration = 14 / 4.0
+    actual_duration = cue["end"] - cue["start"]
+    assert abs(actual_duration - expected_duration) < 1e-4
+    assert abs(cue["end"] - (0.8 + 3.5)) < 1e-4
+
+
+def test_cjk_multi_chunk_split_exact_character_reconstruction_and_duration():
+    """
+    Synthetic Unit Test:
+    Verify that long space-free CJK text spanning multiple chunks:
+    1. Concatenating all cues' text in order reproduces the original text character-for-character with ZERO added characters.
+    2. No cue's lines contain any character (e.g. space) not present in the original text.
+    3. Each cue's duration reflects its own chunk's character count divided by max_cps (not the full original segment's length).
+    """
+    # 30-character space-free Japanese sentence: "吾輩は猫である名前はまだ無いどこで生れたかとんと見当がつかぬ"
+    cjk_text = "吾輩は猫である名前はまだ無いどこで生れたかとんと見当がつかぬ"
+    assert len(cjk_text) == 30
+    assert " " not in cjk_text
+
+
+    # Mock Whisper word/subword timestamp output spanning 12.0 seconds
+    # 10 subword chunks of 2-4 characters each
+    subwords = [
+        "吾輩", "は", "猫である", "名前は", "まだ無い",
+        "どこで", "生れたか", "とんと", "見当が", "つかぬ",
+    ]
+    assert "".join(subwords) == cjk_text
+
+    words = []
+    t = 0.0
+    for idx, sw in enumerate(subwords):
+        # In Whisper, subwords may have a leading space in raw BPE representation: e.g. " 吾輩", " は"
+        word_entry = {
+            "word": f" {sw}" if idx > 0 else sw,
+            "start": t,
+            "end": t + 1.1,
+        }
+        words.append(word_entry)
+        t += 1.2
+
+    segment = [
+        {
+            "start": 0.0,
+            "end": 12.0,
+            "text": cjk_text,
+            "words": words,
+            "speaker_id": "SPEAKER_00",
+        }
+    ]
+
+    # max_cue_duration=4.0 and max_chars_per_cue=26 (13 * 2) forces splitting into >= 2 cues
+    cues = create_cues(
+        segment,
+        max_chars_per_line=13,
+        max_lines_per_cue=2,
+        max_cue_duration=4.0,
+        max_cps=4.0,
+    )
+
+    # Must produce multiple cues
+    assert len(cues) >= 2, f"Expected multiple cues for 12s audio, got {len(cues)}"
+
+    # 1. Exact character-for-character reconstruction of original text
+    reconstructed_text = "".join(c["text"] for c in cues)
+    assert reconstructed_text == cjk_text
+    assert len(reconstructed_text) == len(cjk_text)
+
+    # 2. No cue contains fabricated characters or spaces
+    for cue in cues:
+        assert " " not in cue["text"]
+        for line in cue["lines"]:
+            assert " " not in line
+            assert len(line) <= 13
+        # Re-joining cue's lines must reproduce cue["text"]
+        assert "".join(cue["lines"]) == cue["text"]
+
+    all_lines_text = "".join("".join(c["lines"]) for c in cues)
+    assert all_lines_text == cjk_text
+
+    # 3. Each cue's duration reflects its own chunk's character count, not the full 31 chars
+    for cue in cues:
+        chunk_len = len(cue["text"])
+        expected_chunk_cps_dur = chunk_len / 4.0
+        actual_dur = cue["end"] - cue["start"]
+        assert actual_dur >= (expected_chunk_cps_dur - 1e-4)
+        # Verify it is not scaled using the full 31 characters (31 / 4.0 = 7.75s)
+        assert actual_dur < (len(cjk_text) / 4.0)
+
+
+def test_space_containing_multi_chunk_split_word_joining():
+    """
+    Synthetic Unit Test:
+    Verify that multi-chunk splitting on space-containing text (English/Nepali)
+    joins words within each chunk with single spaces correctly.
+    """
+    words = [
+        {"word": f"word{i}", "start": float(i), "end": float(i) + 0.8}
+        for i in range(12)
+    ]
+    full_text = " ".join(f"word{i}" for i in range(12))
+    segment = [
+        {
+            "start": 0.0,
+            "end": 12.0,
+            "text": full_text,
+            "words": words,
+            "speaker_id": "SPEAKER_00",
+        }
+    ]
+
+    cues = create_cues(
+        segment,
+        max_chars_per_line=20,
+        max_lines_per_cue=2,
+        max_cue_duration=4.0,
+    )
+
+    assert len(cues) >= 2
+    # Joining cues' texts with space reproduces original text
+    assert " ".join(c["text"] for c in cues) == full_text
+    for cue in cues:
+        assert "  " not in cue["text"]
+        assert len(cue["text"]) > 0
+
+
 def test_short_segment_produces_single_cue():
+
     """Verify that a single short segment produces exactly one cue with appropriate timestamps."""
     segment = [
         {
@@ -356,6 +555,118 @@ def test_config_parsing_and_overrides(tmp_path: Path):
     assert loaded["min_gap_between_cues"] == 0.15
 
 
+def test_format_config_fallback_when_no_language_override(tmp_path: Path):
+    """Verify base defaults apply when no language override exists for the active language."""
+    custom_yaml = tmp_path / "config.yaml"
+    cfg = {
+        "language": "en",
+        "max_chars_per_line": 42,
+        "max_lines_per_cue": 2,
+        "max_cps": 17.0,
+        "min_cue_duration": 0.8,
+        "max_cue_duration": 7.0,
+        "min_gap_between_cues": 0.1,
+        "format": {
+            "language_overrides": {
+                "ja": {
+                    "max_chars_per_line": 13,
+                    "max_cps": 4.0,
+                }
+            }
+        },
+    }
+    with open(custom_yaml, "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f)
+
+    loaded = _load_format_config(custom_yaml)
+    assert loaded["max_chars_per_line"] == 42
+    assert loaded["max_lines_per_cue"] == 2
+    assert loaded["max_cps"] == 17.0
+    assert loaded["min_cue_duration"] == 0.8
+    assert loaded["max_cue_duration"] == 7.0
+    assert loaded["min_gap_between_cues"] == 0.1
+
+
+def test_format_config_language_override_ja(tmp_path: Path):
+    """Verify that a language override for Japanese overrides specified keys while others fall back to defaults."""
+    custom_yaml = tmp_path / "config.yaml"
+    cfg = {
+        "language": "ja",
+        "max_chars_per_line": 42,
+        "max_lines_per_cue": 2,
+        "max_cps": 17.0,
+        "min_cue_duration": 0.8,
+        "max_cue_duration": 7.0,
+        "min_gap_between_cues": 0.1,
+        "format": {
+            "language_overrides": {
+                "ja": {
+                    "max_chars_per_line": 13,
+                    "max_cps": 4.0,
+                }
+            }
+        },
+    }
+    with open(custom_yaml, "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f)
+
+    loaded = _load_format_config(custom_yaml)
+    assert loaded["max_chars_per_line"] == 13
+    assert loaded["max_cps"] == 4.0
+    assert loaded["max_lines_per_cue"] == 2
+    assert loaded["min_cue_duration"] == 0.8
+    assert loaded["max_cue_duration"] == 7.0
+    assert loaded["min_gap_between_cues"] == 0.1
+
+
+def test_format_config_explicit_language_param_precedence(tmp_path: Path):
+    """Verify that an explicit language parameter takes precedence over config.yaml's top-level language key."""
+    custom_yaml = tmp_path / "config.yaml"
+    cfg = {
+        "language": "ne",
+        "max_chars_per_line": 42,
+        "max_lines_per_cue": 2,
+        "max_cps": 17.0,
+        "min_cue_duration": 0.8,
+        "max_cue_duration": 7.0,
+        "min_gap_between_cues": 0.1,
+        "format": {
+            "language_overrides": {
+                "ja": {
+                    "max_chars_per_line": 13,
+                    "max_cps": 4.0,
+                },
+                "ne": {
+                    "max_chars_per_line": 42,
+                    "max_cps": 17.0,
+                },
+            }
+        },
+    }
+    with open(custom_yaml, "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f)
+
+    # 1. Without explicit language parameter, loads 'ne' based on config.yaml
+    loaded_ne = _load_format_config(custom_yaml)
+    assert loaded_ne["max_chars_per_line"] == 42
+    assert loaded_ne["max_cps"] == 17.0
+
+    # 2. With explicit language='ja', overrides top-level 'ne'
+    loaded_ja = _load_format_config(custom_yaml, language="ja")
+    assert loaded_ja["max_chars_per_line"] == 13
+    assert loaded_ja["max_cps"] == 4.0
+    assert loaded_ja["max_lines_per_cue"] == 2
+    assert loaded_ja["min_cue_duration"] == 0.8
+
+    # 3. create_cues with explicit language parameter applies the override
+    # Text length 20 chars at 4.0 CPS requires at least 20 / 4.0 = 5.0 seconds duration
+    segment = [{"start": 0.0, "end": 1.0, "text": "12345678901234567890"}]
+    cues = create_cues(segment, config_path=custom_yaml, language="ja")
+    assert len(cues) == 1
+    assert cues[0]["end"] >= 5.0
+
+
+
 def test_real_full_pipeline_formatting_integration(tmp_path: Path):
     """
     Real Integration Test:
@@ -406,3 +717,78 @@ def test_real_full_pipeline_formatting_integration(tmp_path: Path):
     assert "00:00:" in srt_content
     assert "WEBVTT" in vtt_content
     assert any(cue["speaker_id"] is not None for cue in cues)
+
+
+def test_real_japanese_formatting_integration(tmp_path: Path):
+    """
+    Real Integration Test:
+    Execute VAD -> ASR -> Diarize -> Format on tests/fixtures/japanese_sample.wav with language="ja".
+    Explicitly asserts that Japanese formatting overrides (max_chars_per_line <= 13, max_cps <= 4.0)
+    were applied to the real transcribed text, and writes .srt/.vtt files to tmp_path.
+    """
+    fixture_path = Path(__file__).resolve().parent / "fixtures" / "japanese_sample.wav"
+    assert fixture_path.exists(), f"Missing fixture at {fixture_path}"
+
+    # 1. VAD stage
+    speech_regions = get_speech_regions(fixture_path)
+    assert len(speech_regions) > 0, "VAD found no speech regions in japanese_sample.wav"
+
+    # 2. ASR stage
+    asr_segments = transcribe(
+        fixture_path,
+        speech_regions=speech_regions,
+        language="ja",
+        word_timestamps=True,
+    )
+    assert len(asr_segments) > 0, "ASR produced no segments for Japanese fixture"
+
+    # 3. Diarize stage
+    diarization_turns = diarize(fixture_path)
+    merged_segments = merge_with_transcript(asr_segments, diarization_turns)
+    assert len(merged_segments) == len(asr_segments)
+
+    # 4. Format stage with explicit language="ja"
+    cues = create_cues(merged_segments, language="ja")
+    assert len(cues) > 0, "Format stage produced no cues"
+
+    # Verify Japanese formatting constraints were applied:
+    # A. Line length cap: <= 13 characters per line
+    for cue in cues:
+        for line in cue["lines"]:
+            assert len(line) <= 13, f"Line exceeds 13 characters in Japanese cue: '{line}' ({len(line)} chars)"
+
+    # B. CPS constraint: duration >= len(text) / 4.0 CPS (or min_cue_duration)
+    for cue in cues:
+        duration = cue["end"] - cue["start"]
+        text_len = len(cue["text"])
+        required_duration_by_cps = text_len / 4.0
+        assert duration >= (required_duration_by_cps - 1e-4), (
+            f"Cue duration {duration:.3f}s does not satisfy 4.0 CPS cap for text '{cue['text']}' "
+            f"({text_len} chars, requires >= {required_duration_by_cps:.3f}s)"
+        )
+
+    srt_file = write_srt(cues, tmp_path / "japanese_output.srt", include_speaker=True)
+    vtt_file = write_vtt(cues, tmp_path / "japanese_output.vtt", include_speaker=True)
+
+    assert srt_file.exists()
+    assert vtt_file.exists()
+
+    srt_content = srt_file.read_text(encoding="utf-8")
+    vtt_content = vtt_file.read_text(encoding="utf-8")
+
+    # Print contents to stdout for inspection
+    print("\n" + "=" * 60)
+    print("REAL JAPANESE INTEGRATION TEST - GENERATED SRT OUTPUT:")
+    print("=" * 60)
+    print(srt_content)
+    print("=" * 60)
+    print("REAL JAPANESE INTEGRATION TEST - GENERATED VTT OUTPUT:")
+    print("=" * 60)
+    print(vtt_content)
+    print("=" * 60)
+
+    # Basic validations
+    assert "00:00:" in srt_content
+    assert "WEBVTT" in vtt_content
+    assert any(cue["speaker_id"] is not None for cue in cues)
+

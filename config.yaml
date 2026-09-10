@@ -15,5 +15,17 @@ min_cue_duration: 0.8
 max_cue_duration: 7.0
 min_gap_between_cues: 0.1
 
+# Per-language formatting overrides.
+# Japanese figures are based on Netflix's Timed Text Style Guide (~4 CPS, ~13 full-width chars/line)
+# as an industry-standard starting point, not an exact requirement; they may need tuning once real Japanese output is reviewed.
+format:
+  language_overrides:
+    ja:
+      max_chars_per_line: 13
+      max_cps: 4.0
+    ne:
+      max_chars_per_line: 42
+      max_cps: 17
+
 # Diarization
 num_speakers: null   # leave null to let pyannote infer automatically

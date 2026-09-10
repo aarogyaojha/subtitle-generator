@@ -38,13 +38,18 @@ DEFAULT_MAX_CUE_DURATION = 7.0
 DEFAULT_MIN_GAP_BETWEEN_CUES = 0.1
 
 
-def _load_format_config(config_path: Union[str, Path] = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
+def _load_format_config(
+    config_path: Union[str, Path] = DEFAULT_CONFIG_PATH,
+    language: Optional[str] = None,
+) -> dict[str, Any]:
     """
     Read subtitle formatting configuration settings if present in config.yaml,
-    otherwise return default values.
+    applying language-specific overrides when available, otherwise return default values.
 
     Args:
         config_path: Path to the configuration YAML file.
+        language: Optional language code (e.g. 'ja', 'ne'). If not provided,
+            reads the active language from config.yaml.
 
     Returns:
         Dictionary containing max_chars_per_line, max_lines_per_cue, max_cps,
@@ -59,7 +64,7 @@ def _load_format_config(config_path: Union[str, Path] = DEFAULT_CONFIG_PATH) -> 
         "min_gap_between_cues": DEFAULT_MIN_GAP_BETWEEN_CUES,
     }
 
-    return load_stage_config(
+    base_config = load_stage_config(
         config_path=config_path,
         section_name="format",
         defaults=format_settings,
@@ -70,9 +75,22 @@ def _load_format_config(config_path: Union[str, Path] = DEFAULT_CONFIG_PATH) -> 
             "min_cue_duration",
             "max_cue_duration",
             "min_gap_between_cues",
+            "language",
         ],
         stage_label="Format",
     )
+
+    active_language = language or base_config.get("language")
+
+    if active_language:
+        return load_stage_config(
+            config_path=config_path,
+            section_name=f"format.language_overrides.{active_language}",
+            defaults=base_config,
+            stage_label="Format",
+        )
+
+    return base_config
 
 
 def format_timestamp(seconds: float, format_type: str = "srt") -> str:
@@ -109,6 +127,9 @@ def wrap_text(
     """
     Break text into lines conforming to maximum line length and line count limits.
 
+    When a single unbreakable token exceeds max_chars_per_line, it is hard-split
+    by character count with no fabricated separators inserted.
+
     Args:
         text: Subtitle cue text to wrap.
         max_chars_per_line: Maximum character width per line.
@@ -117,25 +138,62 @@ def wrap_text(
     Returns:
         List of wrapped text lines.
     """
-    clean_text = " ".join(text.strip().split())
-    if not clean_text:
+    stripped = text.strip()
+    if not stripped:
         return []
 
-    lines = textwrap.wrap(
-        clean_text,
-        width=max_chars_per_line,
-        break_long_words=True,
-        break_on_hyphens=False,
-    )
+    if max_chars_per_line <= 0:
+        return [stripped]
+    if max_lines_per_cue <= 0:
+        max_lines_per_cue = 1
 
-    if not lines:
-        return [clean_text]
+    # If text already fits within a single line
+    if len(stripped) <= max_chars_per_line:
+        return [stripped]
 
-    # If lines exceed max_lines_per_cue, combine remaining lines into the last line
-    if len(lines) > max_lines_per_cue:
-        first_lines = lines[: max_lines_per_cue - 1]
-        last_line = " ".join(lines[max_lines_per_cue - 1 :])
-        lines = first_lines + [last_line]
+    # Split text into whitespace-delimited tokens if spaces exist
+    raw_tokens = stripped.split()
+    if not raw_tokens:
+        return []
+
+    # Break tokens into chunks of at most max_chars_per_line
+    # Each item is (chunk_text, is_new_word)
+    items: list[tuple[str, bool]] = []
+    for t_idx, token in enumerate(raw_tokens):
+        if len(token) <= max_chars_per_line:
+            items.append((token, t_idx > 0))
+        else:
+            for i in range(0, len(token), max_chars_per_line):
+                slice_text = token[i : i + max_chars_per_line]
+                items.append((slice_text, t_idx > 0 if i == 0 else False))
+
+    if not items:
+        return []
+
+    lines: list[str] = []
+    curr_line = ""
+
+    for item_text, is_new_word in items:
+        # If we reached the last allowed line, append everything remaining to the last line
+        if len(lines) == max_lines_per_cue - 1:
+            if not curr_line:
+                curr_line = item_text
+            else:
+                sep = " " if is_new_word else ""
+                curr_line += sep + item_text
+        else:
+            if not curr_line:
+                curr_line = item_text
+            else:
+                sep = " " if is_new_word else ""
+                if len(curr_line) + len(sep) + len(item_text) <= max_chars_per_line:
+                    curr_line += sep + item_text
+                else:
+                    lines.append(curr_line)
+                    curr_line = item_text
+
+    if curr_line:
+        lines.append(curr_line)
 
     return lines
 
@@ -144,6 +202,7 @@ def _split_words_into_cue_chunks(
     words: list[dict[str, Any]],
     max_chars: int,
     max_duration: float,
+    has_spaces: bool = True,
 ) -> list[list[dict[str, Any]]]:
     """
     Split a list of word dictionaries into chunks that fit within character and duration constraints.
@@ -152,6 +211,7 @@ def _split_words_into_cue_chunks(
         words: List of word dicts with 'word', 'start', and 'end'.
         max_chars: Maximum character count allowed in a single cue box.
         max_duration: Maximum duration in seconds allowed for a single cue.
+        has_spaces: Whether the underlying text contains whitespace delimiters between words.
 
     Returns:
         List of word chunks (each chunk is a list of word dicts).
@@ -162,13 +222,23 @@ def _split_words_into_cue_chunks(
     current_start = 0.0
 
     for word_info in words:
-        word_text = str(word_info.get("word", "")).strip()
+        raw_word = str(word_info.get("word", ""))
+        word_text = raw_word.strip()
         if not word_text:
             continue
 
         w_start = float(word_info.get("start", 0.0))
         w_end = float(word_info.get("end", w_start))
-        added_len = len(word_text) + (1 if current_chunk else 0)
+
+        if not current_chunk:
+            added_len = len(word_text)
+        else:
+            if raw_word.startswith(" "):
+                added_len = len(raw_word)
+            elif has_spaces:
+                added_len = len(word_text) + 1
+            else:
+                added_len = len(word_text)
 
         should_split = False
         if current_chunk:
@@ -192,6 +262,7 @@ def _split_words_into_cue_chunks(
         chunks.append(current_chunk)
 
     return chunks
+
 
 
 def _split_text_into_cue_chunks(
@@ -218,32 +289,43 @@ def _split_text_into_cue_chunks(
     if not words:
         return []
 
-    # Group words into chunks by max_chars
-    word_chunks: list[list[str]] = []
-    curr_chunk: list[str] = []
+    # Group words into chunks by max_chars; hard-split any token that exceeds max_chars
+    token_chunks: list[list[tuple[str, bool]]] = []
+    curr_chunk: list[tuple[str, bool]] = []
     curr_len = 0
 
-    for w in words:
-        add_len = len(w) + (1 if curr_chunk else 0)
-        if curr_chunk and curr_len + add_len > max_chars:
-            word_chunks.append(curr_chunk)
-            curr_chunk = []
-            curr_len = 0
-        curr_chunk.append(w)
-        curr_len += add_len
+    for w_idx, w in enumerate(words):
+        if len(w) <= max_chars:
+            slices = [(w, w_idx > 0)]
+        else:
+            slices = [(w[i : i + max_chars], w_idx > 0 if i == 0 else False) for i in range(0, len(w), max_chars)]
+
+        for s_text, is_new in slices:
+            add_len = len(s_text) + (1 if (curr_chunk and is_new) else 0)
+            if curr_chunk and (curr_len + add_len > max_chars):
+                token_chunks.append(curr_chunk)
+                curr_chunk = []
+                curr_len = 0
+            curr_chunk.append((s_text, is_new))
+            curr_len += add_len
 
     if curr_chunk:
-        word_chunks.append(curr_chunk)
+        token_chunks.append(curr_chunk)
 
-    total_chars = max(1, sum(len(w) for w in words))
+    total_chars = max(1, len(text.strip()))
     total_duration = max(0.0, seg_end - seg_start)
 
     sub_cues: list[dict[str, Any]] = []
     consumed_chars = 0
 
-    for chunk in word_chunks:
-        chunk_text = " ".join(chunk)
-        chunk_chars = sum(len(w) for w in chunk)
+    for chunk in token_chunks:
+        chunk_parts = []
+        for idx, (s_text, is_new) in enumerate(chunk):
+            if idx > 0 and is_new:
+                chunk_parts.append(" ")
+            chunk_parts.append(s_text)
+        chunk_text = "".join(chunk_parts)
+        chunk_chars = len(chunk_text)
 
         c_start = seg_start + (consumed_chars / total_chars) * total_duration
         consumed_chars += chunk_chars
@@ -252,12 +334,17 @@ def _split_text_into_cue_chunks(
         dur = c_end - c_start
         if dur > max_duration and len(chunk) > 1:
             n_sub = int(dur // max_duration) + 1
-            words_per_sub = max(1, len(chunk) // n_sub)
+            items_per_sub = max(1, len(chunk) // n_sub)
             sub_start = c_start
-            for i in range(0, len(chunk), words_per_sub):
-                sub_words = chunk[i : i + words_per_sub]
-                sub_text = " ".join(sub_words)
-                sub_sub_dur = (len(sub_text) / len(chunk_text)) * dur
+            for i in range(0, len(chunk), items_per_sub):
+                sub_items = chunk[i : i + items_per_sub]
+                sub_parts = []
+                for s_idx, (st, is_n) in enumerate(sub_items):
+                    if s_idx > 0 and is_n:
+                        sub_parts.append(" ")
+                    sub_parts.append(st)
+                sub_text = "".join(sub_parts)
+                sub_sub_dur = (len(sub_text) / max(1, len(chunk_text))) * dur
                 sub_cues.append(
                     {
                         "start": sub_start,
@@ -281,6 +368,7 @@ def _split_text_into_cue_chunks(
 def create_cues(
     transcript_segments: list[dict[str, Any]],
     config_path: Union[str, Path] = DEFAULT_CONFIG_PATH,
+    language: Optional[str] = None,
     **overrides: Any,
 ) -> list[dict[str, Any]]:
     """
@@ -297,13 +385,15 @@ def create_cues(
         transcript_segments: List of transcript segments (from diarize.merge_with_transcript),
             each containing 'start', 'end', 'text', and optionally 'speaker_id' and 'words'.
         config_path: Path to config.yaml.
+        language: Optional language code for language-specific formatting overrides (e.g. 'ja', 'ne').
+            If not provided, reads the active language from config.yaml.
         **overrides: Optional runtime overrides for format configuration parameters.
 
     Returns:
         List of formatted cue dictionaries, each containing 'index', 'start', 'end',
         'text', 'lines', and 'speaker_id'.
     """
-    config = _load_format_config(config_path)
+    config = _load_format_config(config_path, language=language)
     config.update(overrides)
 
     max_chars_per_line = int(config.get("max_chars_per_line", DEFAULT_MAX_CHARS_PER_LINE))
@@ -327,16 +417,25 @@ def create_cues(
         speaker_id = seg.get("speaker_id")
         words = seg.get("words", [])
 
+        has_spaces = (" " in text)
         if words:
             word_chunks = _split_words_into_cue_chunks(
                 words=words,
                 max_chars=max_chars_per_cue,
                 max_duration=max_cue_duration,
+                has_spaces=has_spaces,
             )
             for chunk in word_chunks:
-                chunk_text = " ".join(str(w.get("word", "")).strip() for w in chunk).strip()
+                if not has_spaces:
+                    chunk_text = "".join(str(w.get("word", "")).strip() for w in chunk)
+                elif len(word_chunks) == 1 and text:
+                    chunk_text = text
+                else:
+                    chunk_text = " ".join(str(w.get("word", "")).strip() for w in chunk)
+
                 if not chunk_text:
                     continue
+
                 c_start = float(chunk[0].get("start", seg_start))
                 c_end = float(chunk[-1].get("end", seg_end))
                 raw_cues.append(
@@ -367,6 +466,7 @@ def create_cues(
                         "speaker_id": speaker_id,
                     }
                 )
+
 
     if not raw_cues:
         return []
@@ -547,6 +647,7 @@ def write_vtt(
 def format_transcript(
     transcript_segments: list[dict[str, Any]],
     config_path: Union[str, Path] = DEFAULT_CONFIG_PATH,
+    language: Optional[str] = None,
     **overrides: Any,
 ) -> list[dict[str, Any]]:
     """
@@ -555,6 +656,7 @@ def format_transcript(
     Args:
         transcript_segments: Merged transcript segments.
         config_path: Path to config.yaml.
+        language: Optional language code for language-specific formatting overrides.
         **overrides: Configuration overrides.
 
     Returns:
@@ -563,6 +665,7 @@ def format_transcript(
     return create_cues(
         transcript_segments=transcript_segments,
         config_path=config_path,
+        language=language,
         **overrides,
     )
 
