@@ -19,14 +19,12 @@ Output: list of (start_time, end_time) tuples marking speech
 import logging
 from pathlib import Path
 from typing import Union
-import yaml
 import torch
 import torchaudio
 
-logger = logging.getLogger(__name__)
+from src.config_utils import DEFAULT_CONFIG_PATH, load_stage_config
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+logger = logging.getLogger(__name__)
 
 # Sane default thresholds for Silero VAD:
 # - threshold (0.5): Speech probability threshold above which a frame is classified as speech.
@@ -65,23 +63,12 @@ def _load_thresholds_from_config(config_path: Union[str, Path] = DEFAULT_CONFIG_
         "min_silence_duration_ms": DEFAULT_MIN_SILENCE_DURATION_MS,
         "speech_pad_ms": DEFAULT_SPEECH_PAD_MS,
     }
-    cfg_file = Path(config_path)
-    if cfg_file.exists():
-        try:
-            with open(cfg_file, "r", encoding="utf-8") as f:
-                cfg = yaml.safe_load(f) or {}
-            vad_cfg = cfg.get("vad", {})
-            if isinstance(vad_cfg, dict):
-                for key in thresholds:
-                    if key in vad_cfg and vad_cfg[key] is not None:
-                        thresholds[key] = vad_cfg[key]
-        except Exception as e:
-            logger.warning(
-                "Failed to parse VAD configuration from %s: %s. Falling back to default thresholds.",
-                cfg_file,
-                e,
-            )
-    return thresholds
+    return load_stage_config(
+        config_path=config_path,
+        section_name="vad",
+        defaults=thresholds,
+        stage_label="VAD",
+    )
 
 
 def _load_audio(audio_path: Path) -> tuple[torch.Tensor, int]:

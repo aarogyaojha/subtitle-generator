@@ -23,12 +23,10 @@ from pathlib import Path
 from typing import Any, Optional, Union
 import faster_whisper
 import torch
-import yaml
+
+from src.config_utils import DEFAULT_CONFIG_PATH, load_stage_config
 
 logger = logging.getLogger(__name__)
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 
 # Default ASR settings when config.yaml does not define an `asr:` section:
 # - model_size: "large-v3" (standard Whisper large-v3)
@@ -61,34 +59,13 @@ def _load_asr_config(config_path: Union[str, Path] = DEFAULT_CONFIG_PATH) -> dic
         "language": DEFAULT_LANGUAGE,
     }
 
-    cfg_file = Path(config_path)
-    if cfg_file.exists():
-        try:
-            with open(cfg_file, "r", encoding="utf-8") as f:
-                cfg = yaml.safe_load(f) or {}
-
-            # Read top-level language if present
-            if "language" in cfg and cfg["language"] is not None:
-                asr_settings["language"] = str(cfg["language"])
-
-            asr_cfg = cfg.get("asr", {})
-            if isinstance(asr_cfg, dict):
-                if "model_size" in asr_cfg and asr_cfg["model_size"] is not None:
-                    asr_settings["model_size"] = str(asr_cfg["model_size"])
-                if "compute_type" in asr_cfg and asr_cfg["compute_type"] is not None:
-                    asr_settings["compute_type"] = str(asr_cfg["compute_type"])
-                if "device" in asr_cfg and asr_cfg["device"] is not None:
-                    asr_settings["device"] = str(asr_cfg["device"])
-                if "language" in asr_cfg and asr_cfg["language"] is not None:
-                    asr_settings["language"] = str(asr_cfg["language"])
-        except Exception as e:
-            logger.warning(
-                "Failed to parse ASR configuration from %s: %s. Falling back to default settings.",
-                cfg_file,
-                e,
-            )
-
-    return asr_settings
+    return load_stage_config(
+        config_path=config_path,
+        section_name="asr",
+        defaults=asr_settings,
+        top_level_keys=["language"],
+        stage_label="ASR",
+    )
 
 
 def load_asr_model(
