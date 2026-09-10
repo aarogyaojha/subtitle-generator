@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 # for utterance 50173ab781 (speaker 6059d)
 OPENSLR_54_GROUND_TRUTH_50173ab781 = "वसन्तपुर दरवार गद्दी"
 
+# Ground truth transcription from Mozilla Common Voice 17.0 Japanese test set (`transcript/ja/test.tsv`)
+# for utterance common_voice_ja_19499629.mp3 (sentence ID: 15ad6b4189a5cd1670c10c64fdfeb84f01e7d203ccc2b6ebd444961df4b89020)
+COMMON_VOICE_JA_GROUND_TRUTH_19499629 = "新しい靴をはいて出かけます。"
+
+
 
 @pytest.fixture
 def dummy_audio_file(tmp_path: Path) -> Path:
@@ -181,3 +186,46 @@ def test_real_nepali_transcription_integration(caplog: pytest.LogCaptureFixture)
     )
     print(comparison_report)
     logger.info(comparison_report)
+
+
+def test_real_japanese_transcription_integration(caplog: pytest.LogCaptureFixture):
+    """
+    Integration test: run real Whisper transcription on tests/fixtures/japanese_sample.wav.
+
+    Verifies that speech regions from VAD are passed as clip timestamps,
+    the model produces non-empty output with language="ja", and logs the comparison
+    between the Mozilla Common Voice ground truth and actual transcribed text.
+    """
+    fixture_path = Path(__file__).resolve().parent / "fixtures" / "japanese_sample.wav"
+    assert fixture_path.exists(), f"Real speech fixture missing: {fixture_path}"
+
+    # 1. Run VAD to obtain real speech regions
+    speech_regions = get_speech_regions(fixture_path)
+    assert len(speech_regions) > 0, "Expected VAD to detect speech in japanese_sample.wav"
+    logger.info("Detected VAD speech regions for Japanese fixture: %s", speech_regions)
+
+    # 2. Run real ASR transcription with language="ja"
+    segments = transcribe(fixture_path, speech_regions=speech_regions, language="ja")
+
+    assert len(segments) > 0, "Expected transcription output to have at least one segment"
+    first_seg = segments[0]
+    assert isinstance(first_seg["text"], str) and len(first_seg["text"]) > 0
+    assert 0.0 <= first_seg["confidence"] <= 1.0
+    assert first_seg["start"] >= 0.0
+    assert first_seg["end"] > first_seg["start"]
+
+    transcribed_text = " ".join(seg["text"] for seg in segments)
+
+    # Print & log ground truth vs transcribed text comparison for manual eyeball inspection
+    comparison_report = (
+        "\n=======================================================\n"
+        "ASR INTEGRATION TEST COMPARISON REPORT (Common Voice JA 19499629)\n"
+        f"  VAD Clip Boundaries : {speech_regions}\n"
+        f"  Ground Truth (TSV)  : {COMMON_VOICE_JA_GROUND_TRUTH_19499629}\n"
+        f"  Actual Transcribed  : {transcribed_text}\n"
+        f"  Confidence Score    : {first_seg['confidence']:.4f} (avg_logprob: {first_seg['avg_logprob']:.4f})\n"
+        "======================================================="
+    )
+    print(comparison_report)
+    logger.info(comparison_report)
+

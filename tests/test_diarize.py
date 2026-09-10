@@ -268,3 +268,53 @@ def test_real_nepali_diarization_and_merge_integration():
     report_str = "\n".join(report_lines)
     print(report_str)
     logger.info(report_str)
+
+
+def test_real_japanese_diarization_and_merge_integration():
+    """
+    Real integration test on tests/fixtures/japanese_sample.wav.
+
+    Verifies:
+    1. pyannote diarization executes on the real Japanese audio fixture.
+    2. Returns valid speaker turns for the audio fixture.
+    3. merge_with_transcript correctly assigns speaker tags to the transcribed Japanese ASR segments.
+    """
+    fixture_path = Path(__file__).resolve().parent / "fixtures" / "japanese_sample.wav"
+    assert fixture_path.exists(), f"Real speech fixture missing: {fixture_path}"
+
+    # 1. Run real diarization
+    turns = diarize(fixture_path)
+    assert len(turns) > 0, f"Expected at least 1 speaker turn for speech fixture, got: {turns}"
+    for turn in turns:
+        assert isinstance(turn["speaker_id"], str) and len(turn["speaker_id"]) > 0
+        assert turn["end"] > turn["start"]
+
+    # 2. Run real VAD + ASR transcription with language="ja"
+    speech_regions = get_speech_regions(fixture_path)
+    asr_segments = transcribe(fixture_path, speech_regions=speech_regions, language="ja")
+    assert len(asr_segments) > 0, "ASR transcription produced no segments"
+
+    # 3. Merge transcript with diarization
+    merged = merge_with_transcript(asr_segments, turns)
+    assert len(merged) == len(asr_segments)
+    for seg in merged:
+        assert seg["speaker_id"] is not None
+
+    # Visual eyeball report
+    report_lines = [
+        "\n=======================================================",
+        "DIARIZATION & MERGE INTEGRATION REPORT (Common Voice JA 19499629)",
+        f"  Fixture File       : {fixture_path.name}",
+        f"  Diarization Turns  : {turns}",
+        "  Merged Transcript Segments:",
+    ]
+    for idx, seg in enumerate(merged, 1):
+        report_lines.append(
+            f"    {idx}. [{seg['start']:.2f}s -> {seg['end']:.2f}s] "
+            f"[{seg['speaker_id']}] text='{seg['text']}' (confidence: {seg['confidence']:.4f})"
+        )
+    report_lines.append("=======================================================")
+    report_str = "\n".join(report_lines)
+    print(report_str)
+    logger.info(report_str)
+

@@ -169,3 +169,18 @@ def test_real_nepali_speech_returns_speech_regions():
         assert start >= 0
         assert end > start
 
+
+def test_real_japanese_speech_returns_speech_regions():
+    """Verify that get_speech_regions detects speech in the real Japanese test fixture."""
+    fixture_path = Path(__file__).resolve().parent / "fixtures" / "japanese_sample.wav"
+    assert fixture_path.exists(), f"Real speech fixture missing: {fixture_path}"
+
+    regions = get_speech_regions(fixture_path)
+    assert len(regions) > 0, "Expected VAD to detect speech in japanese_sample.wav"
+    for start, end in regions:
+        assert isinstance(start, (int, float))
+        assert isinstance(end, (int, float))
+        assert start >= 0
+        assert end > start
+
+
