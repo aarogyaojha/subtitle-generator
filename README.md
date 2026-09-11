@@ -13,13 +13,15 @@ An open-source AI subtitle generation pipeline engineered to solve common failur
 
 Existing open-source ASR implementations frequently suffer from specific edge-case failures. Subtitle Generator targets these directly:
 
-| Failure Mode | Pipeline Remedy | Status |
+| Failure Mode / Feature | Pipeline Remedy | Status |
 | --- | --- | --- |
-| **Silence Hallucination / Repetition** | Silero VAD pre-filtering + prompt-priming + repetition thresholds | Partial (drastically reduced) |
+| **Silence Hallucination / Repetition** | Silero VAD pre-filtering before ASR | Partial (drastically reduced) |
 | **Chunk-Boundary Text Duplication** | Dynamic VAD-based audio batching | Solved |
-| **Reading Speed & Line Overflow** | Language-specific deterministic CPS & line-length formatting | Solved |
-| **Speaker Diarization Error** | Integrated `pyannote.audio` pipeline | Partial (10–20% DER baseline) |
-| **Context-Dependent Word Sense** | Confidence-gated context correction pass | Partial |
+| **Reading Speed & Line Overflow** | Language-specific deterministic CPS & line-length formatting (Nepali, Japanese, English) | Solved |
+| **Multilingual Transcription** | `faster-whisper` large-v3 / medium with CJK character handling | Solved (Nepali & Japanese validated) |
+| **English Translation Output** | Dual native + English subtitle export (`task="translate"`, `.srt`/`.vtt` + `.en.srt`/`.en.vtt`) | Solved |
+| **Speaker Diarization Error** | Integrated `pyannote.audio` pipeline | Partial (tested on 3-speaker fixture: 2 distinct clusters detected, 2 speakers merged) |
+| **Context-Dependent Word Sense** | Confidence-gated context correction pass | Planned / Future |
 | **Noise-Induced Dropped Text** | Tunable VAD thresholds & hardware tier sensitivity | Under active research |
 
 ---
@@ -55,8 +57,35 @@ Source Audio File
 
 ## Languages Scope (v1)
 
-- **Nepali** (low-resource language script baseline using OpenSLR 54 dataset baseline)
-- **Japanese** (high-resource script baseline using ReazonSpeech dataset / `kotoba-whisper-v2.0` optimizations)
+- **Nepali (`ne`)**: Fully implemented and validated end-to-end on OpenSLR 54 dataset baseline fixtures.
+- **Japanese (`ja`)**: Fully implemented and validated end-to-end with strict 13 CJK characters/line formatting and 4.0 CPS pacing on Mozilla Common Voice fixtures.
+- **English (`en`) Translation**: Fully implemented dual-export translation pass (`task="translate"`), generating `.en.srt` and `.en.vtt` alongside native subtitles by default.
+
+---
+
+## CLI Usage
+
+The command-line interface provides a single entry point to run the entire pipeline on audio or video files:
+
+```bash
+python -m src.cli <input_file> [options]
+```
+
+### Options
+- `<input_file>`: Path to input audio (`.wav`, `.flac`, `.mp3`, etc.) or video (`.mp4`, `.mkv`, `.avi`, `.mov`, etc.).
+- `-o, --output-dir`: Directory to save generated `.srt` and `.vtt` files (defaults to `output/`).
+- `-c, --config`: Path to YAML configuration file (defaults to `config.yaml`).
+- `-t, --hardware-tier`: Hardware tier override (`colab` for large-v3, `local` for 4GB VRAM cards).
+- `-l, --language`: Language code override (e.g. `ne`, `ja`). If omitted, reads from `config.yaml`.
+- `--include-speaker / --no-speaker`: Toggle speaker identification labels in output subtitles (default: `--include-speaker`).
+
+> [!NOTE]
+> For non-English source audio, Subtitle Generator automatically generates both native subtitles (`<input>.srt` / `<input>.vtt`) and English translation subtitles (`<input>.en.srt` / `<input>.en.vtt`) in a single pass.
+
+### Example Invocation
+```bash
+conda run -n subgen python -m src.cli sample_video.mp4 -t local -l ja -o ./subtitles
+```
 
 ---
 
@@ -64,8 +93,8 @@ Source Audio File
 
 Subtitle Generator supports configurable hardware profiles so it runs effectively on low-end local consumer GPUs as well as cloud infrastructure:
 
-- **Low-End Local GPU (e.g., RTX 3050 4GB VRAM):** INT8 quantized models (`faster-whisper`), optimized batch sizes, CPU fallback options.
-- **Capable / Cloud GPU (e.g., NVIDIA T4 16GB VRAM on Colab / AWS `g4dn.xlarge`):** `Whisper large-v3`, full `pyannote.audio` diarization pass, and LLM-assisted context correction.
+- **Low-End Local GPU (`local` tier):** Uses Whisper `medium` with INT8 quantization (`faster-whisper`), Silero VAD, and `pyannote.audio`. Validated on a 4GB RTX 3050 Laptop GPU, staying comfortably within ~2GB VRAM.
+- **Capable / Cloud GPU (`colab` tier):** Uses Whisper `large-v3` with INT8 quantization (~3GB VRAM) for cloud or high-VRAM environments.
 
 ---
 
