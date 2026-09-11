@@ -122,8 +122,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"  - Hardware tier: {summary.get('hardware_tier')}")
         print(f"  - Total cues generated: {summary.get('cue_count', 0)}")
         print(f"  - Distinct speakers detected: {distinct_speakers}")
-        print(f"  - SRT output: {summary.get('srt_path')}")
-        print(f"  - VTT output: {summary.get('vtt_path')}")
+        print(f"  - Native SRT output: {summary.get('srt_path')}")
+        print(f"  - Native VTT output: {summary.get('vtt_path')}")
+        if summary.get("translation_skipped"):
+            print("  - English translation: Skipped (source audio is already English)")
+        else:
+            print(f"  - English SRT output: {summary.get('srt_path_en')}")
+            print(f"  - English VTT output: {summary.get('vtt_path_en')}")
         return 0
 
     except FileNotFoundError as e:
@@ -137,8 +142,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     except (GatedRepoError, HfHubHTTPError) as e:
         print(
             f"Hugging Face Authentication / Gated Access Error:\n{e}\n"
-            "Please ensure you have accepted the model conditions on Hugging Face "
-            "and run `hf auth login`.",
+            "Please verify that you have accepted the pyannote model license on Hugging Face "
+            "and authenticated via `hf auth login` or set the HF_TOKEN environment variable.",
             file=sys.stderr,
         )
         return 1

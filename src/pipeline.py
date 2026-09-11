@@ -6,10 +6,11 @@ Runs in order:
   1. Fail-fast HF pre-flight check (verifies auth before compute)
   2. Audio extraction (if input is video)
   3. vad.py     — find speech regions
-  4. asr.py     — transcribe them
+  4. asr.py     — transcribe them (native pass)
   5. diarize.py — identify speakers
   6. merge      — attach speaker labels to transcript
-  7. format.py  — segment into readable cues, write output
+  7. format.py  — segment into readable cues, write output (.srt/.vtt)
+  8. translate  — English translation pass via faster-whisper (task="translate", .en.srt/.en.vtt)
 
 Hardware-tier aware: reads hardware_tier from config.yaml and maps it
 to explicit overrides for ASR (model size and quantization).
@@ -27,6 +28,7 @@ from typing import Any, Optional, Union
 
 from src.config_utils import DEFAULT_CONFIG_PATH, PROJECT_ROOT, load_stage_config
 from src import vad, asr, diarize, format as fmt
+
 
 logger = logging.getLogger(__name__)
 
@@ -176,9 +178,10 @@ def run_pipeline(
       1. Fail-fast HF pre-flight check (raises immediately if HF auth/token is invalid).
       2. Audio extraction (if input is video).
       3. VAD speech region detection (vad.get_speech_regions).
-      4. ASR transcription (asr.transcribe) with hardware-tier model configuration.
+      4. Native ASR transcription (asr.transcribe with task="transcribe").
       5. Speaker diarization and transcript merging (diarize.diarize & diarize.merge_with_transcript).
-      6. Subtitle cue formatting and file export (format.create_cues, format.write_srt, format.write_vtt).
+      6. Native subtitle cue formatting and file export (format.create_cues, format.write_srt, format.write_vtt).
+      7. English translation pass via faster-whisper (task="translate", .en.srt, .en.vtt) when source != 'en'.
 
     Args:
         input_path: Path to input audio or video file.
@@ -192,14 +195,20 @@ def run_pipeline(
         Summary dictionary containing:
             - "input_path": Path of the original input file.
             - "audio_path": Path of the resolved audio file used for processing.
-            - "srt_path": Path to the generated .srt file.
-            - "vtt_path": Path to the generated .vtt file.
-            - "cues": List of formatted subtitle cue dictionaries.
-            - "cue_count": Total number of cues produced.
+            - "srt_path": Path to the generated native .srt file.
+            - "vtt_path": Path to the generated native .vtt file.
+            - "cues": List of formatted native subtitle cue dictionaries.
+            - "cue_count": Total number of native cues produced.
             - "speech_regions": List of (start, end) tuples from VAD.
-            - "segments": List of merged transcript segment dictionaries.
+            - "segments": List of merged native transcript segment dictionaries.
             - "speaker_turns": List of diarization speaker turn dictionaries.
             - "hardware_tier": The hardware tier applied for this run.
+            - "translation_skipped": Boolean flag indicating whether English translation was skipped.
+            - "translation_skip_reason": Reason string if translation was skipped, else None.
+            - "srt_path_en": Path to the generated English .en.srt file, or None if skipped.
+            - "vtt_path_en": Path to the generated English .en.vtt file, or None if skipped.
+            - "cues_en": List of formatted English subtitle cue dictionaries.
+            - "cue_count_en": Total number of English cues produced (0 if skipped).
 
     Raises:
         FileNotFoundError: If input_path does not exist.
@@ -234,7 +243,7 @@ def run_pipeline(
     try:
         # Explicit consistency guarantee:
         # The exact same resolved_audio_path variable (the extracted temp WAV when input is video,
-        # or the original path when input is already audio) is passed to all three downstream
+        # or the original path when input is already audio) is passed to all downstream
         # stages: vad.get_speech_regions(), asr.transcribe(), and diarize.diarize().
         # No stage accidentally references the original input path after extraction.
 
@@ -246,20 +255,30 @@ def run_pipeline(
         )
         logger.info("VAD detected %d speech region(s)", len(speech_regions))
 
-        # Stage 3: ASR Transcription
+        # Resolve effective source language for ASR and translation decision
+        asr_cfg = asr._load_asr_config(config_path)
+        resolved_language = language if language is not None else asr_cfg["language"]
+
+        # Stage 3: Native ASR Transcription
         active_tier = hardware_tier if hardware_tier is not None else _load_hardware_tier(config_path)
         asr_overrides = get_hardware_tier_overrides(active_tier)
-        logger.info("Running ASR with hardware tier '%s' (overrides: %s)", active_tier, asr_overrides)
+        logger.info(
+            "Running native ASR with hardware tier '%s' (overrides: %s, language: %s)",
+            active_tier,
+            asr_overrides,
+            resolved_language,
+        )
         transcript_segments = asr.transcribe(
             audio_path=resolved_audio_path,
             speech_regions=speech_regions,
             language=language,
+            task="transcribe",
             config_path=config_path,
             **asr_overrides,
         )
-        logger.info("ASR produced %d transcript segment(s)", len(transcript_segments))
+        logger.info("Native ASR produced %d transcript segment(s)", len(transcript_segments))
 
-        # Stage 4: Speaker Diarization & Merge
+        # Stage 4: Speaker Diarization & Merge (Native)
         logger.info("Running speaker diarization on %s", resolved_audio_path)
         speaker_turns = diarize.diarize(
             audio_path=resolved_audio_path,
@@ -267,14 +286,14 @@ def run_pipeline(
         )
         logger.info("Diarization produced %d speaker turn(s)", len(speaker_turns))
 
-        logger.info("Merging transcript segments with speaker diarization turns")
+        logger.info("Merging native transcript segments with speaker diarization turns")
         merged_segments = diarize.merge_with_transcript(
             transcript_segments=transcript_segments,
             diarization_turns=speaker_turns,
         )
 
-        # Stage 5: Subtitle Formatting & Export
-        logger.info("Formatting transcript segments into subtitle cues")
+        # Stage 5: Subtitle Formatting & Export (Native)
+        logger.info("Formatting native transcript segments into subtitle cues")
         cues = fmt.create_cues(
             transcript_segments=merged_segments,
             config_path=config_path,
@@ -290,6 +309,52 @@ def run_pipeline(
         fmt.write_srt(cues=cues, output_path=srt_destination, include_speaker=include_speaker)
         fmt.write_vtt(cues=cues, output_path=vtt_destination, include_speaker=include_speaker)
 
+        # Stage 6: English Translation & Export (if source language is not English)
+        translation_skipped = resolved_language.lower() == "en"
+        srt_destination_en: Optional[Path] = None
+        vtt_destination_en: Optional[Path] = None
+        cues_en: list[dict[str, Any]] = []
+
+        if translation_skipped:
+            logger.info("Source language is already English ('en'). Skipping translation pass.")
+        else:
+            logger.info(
+                "Running translation ASR (task='translate') for source language '%s'",
+                resolved_language,
+            )
+            # Note: Whisper's translate task produces its own timing alignment for the translated text,
+            # which is inherently approximate (translated word boundaries don't map 1:1 to source audio
+            # timing the way native transcription does) — this is expected Whisper behavior.
+            translated_segments = asr.transcribe(
+                audio_path=resolved_audio_path,
+                speech_regions=speech_regions,
+                language=resolved_language,
+                task="translate",
+                config_path=config_path,
+                **asr_overrides,
+            )
+            logger.info("Translation ASR produced %d segment(s)", len(translated_segments))
+
+
+            logger.info("Merging translated segments with existing speaker turns")
+            merged_translated_segments = diarize.merge_with_transcript(
+                transcript_segments=translated_segments,
+                diarization_turns=speaker_turns,
+            )
+
+            logger.info("Formatting translated segments into English subtitle cues")
+            cues_en = fmt.create_cues(
+                transcript_segments=merged_translated_segments,
+                config_path=config_path,
+                language="en",
+            )
+
+            srt_destination_en = out_directory / f"{input_file.stem}.en.srt"
+            vtt_destination_en = out_directory / f"{input_file.stem}.en.vtt"
+
+            fmt.write_srt(cues=cues_en, output_path=srt_destination_en, include_speaker=include_speaker)
+            fmt.write_vtt(cues=cues_en, output_path=vtt_destination_en, include_speaker=include_speaker)
+
         summary = {
             "input_path": str(input_file),
             "audio_path": str(resolved_audio_path),
@@ -301,6 +366,14 @@ def run_pipeline(
             "segments": merged_segments,
             "speaker_turns": speaker_turns,
             "hardware_tier": active_tier,
+            "translation_skipped": translation_skipped,
+            "translation_skip_reason": (
+                "Source language is already English ('en')" if translation_skipped else None
+            ),
+            "srt_path_en": str(srt_destination_en) if srt_destination_en is not None else None,
+            "vtt_path_en": str(vtt_destination_en) if vtt_destination_en is not None else None,
+            "cues_en": cues_en,
+            "cue_count_en": len(cues_en),
         }
         return summary
 

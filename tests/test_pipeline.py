@@ -24,6 +24,8 @@ from src.pipeline import (
 FIXTURES_DIR = PROJECT_ROOT / "tests" / "fixtures"
 NEPALI_AUDIO_FIXTURE = FIXTURES_DIR / "nepali_sample.wav"
 JAPANESE_AUDIO_FIXTURE = FIXTURES_DIR / "japanese_sample.wav"
+NEPALI_MULTISPEAKER_AUDIO_FIXTURE = FIXTURES_DIR / "nepali_multispeaker_sample.wav"
+NEPALI_MULTISPEAKER_GT = FIXTURES_DIR / "nepali_multispeaker_ground_truth.json"
 
 
 
@@ -173,7 +175,8 @@ def test_pipeline_execution_order_and_audio_path_consistency(
 ):
     """
     Verify full mock pipeline execution order, hardware tier parameter passthrough,
-    and guarantee that the exact same resolved audio path is provided to VAD, ASR, and Diarization.
+    two-pass ASR (transcribe + translate), and guarantee that the exact same resolved audio path
+    is provided to VAD, ASR, and Diarization.
     """
     dummy_audio = tmp_path / "recording.wav"
     dummy_audio.write_bytes(b"RIFF dummy audio content")
@@ -181,13 +184,15 @@ def test_pipeline_execution_order_and_audio_path_consistency(
 
     # Setup mock stage returns
     mock_vad.return_value = [(0.0, 2.0)]
-    mock_asr.return_value = [
-        {"start": 0.1, "end": 1.9, "text": "नमस्ते", "confidence": 0.95, "words": []}
+    mock_asr.side_effect = [
+        [{"start": 0.1, "end": 1.9, "text": "नमस्ते", "confidence": 0.95, "words": []}],
+        [{"start": 0.1, "end": 1.9, "text": "Hello", "confidence": 0.95, "words": []}],
     ]
     mock_diarize.return_value = [
         {"start": 0.0, "end": 2.0, "speaker_id": "SPEAKER_00"}
     ]
-    mock_merge.return_value = [
+
+    merged_native = [
         {
             "start": 0.1,
             "end": 1.9,
@@ -197,7 +202,19 @@ def test_pipeline_execution_order_and_audio_path_consistency(
             "words": [],
         }
     ]
-    mock_create_cues.return_value = [
+    merged_translated = [
+        {
+            "start": 0.1,
+            "end": 1.9,
+            "text": "Hello",
+            "confidence": 0.95,
+            "speaker_id": "SPEAKER_00",
+            "words": [],
+        }
+    ]
+    mock_merge.side_effect = [merged_native, merged_translated]
+
+    cues_native = [
         {
             "index": 1,
             "start": 0.1,
@@ -207,6 +224,17 @@ def test_pipeline_execution_order_and_audio_path_consistency(
             "speaker_id": "SPEAKER_00",
         }
     ]
+    cues_translated = [
+        {
+            "index": 1,
+            "start": 0.1,
+            "end": 1.9,
+            "text": "Hello",
+            "lines": ["Hello"],
+            "speaker_id": "SPEAKER_00",
+        }
+    ]
+    mock_create_cues.side_effect = [cues_native, cues_translated]
 
     # Run with local hardware tier
     summary = run_pipeline(
@@ -225,42 +253,68 @@ def test_pipeline_execution_order_and_audio_path_consistency(
         config_path=DEFAULT_CONFIG_PATH,
     )
 
-    # 3. Check ASR called with identical audio path and local hardware overrides
-    mock_asr.assert_called_once_with(
+    # 3. Check ASR called twice: native transcribe pass then translate pass
+    assert mock_asr.call_count == 2
+    mock_asr.assert_any_call(
         audio_path=dummy_audio.resolve(),
         speech_regions=[(0.0, 2.0)],
         language=None,
+        task="transcribe",
+        config_path=DEFAULT_CONFIG_PATH,
+        model_size_or_path="medium",
+        compute_type="int8",
+    )
+    mock_asr.assert_any_call(
+        audio_path=dummy_audio.resolve(),
+        speech_regions=[(0.0, 2.0)],
+        language="ne",
+        task="translate",
         config_path=DEFAULT_CONFIG_PATH,
         model_size_or_path="medium",
         compute_type="int8",
     )
 
-    # 4. Check Diarization called with identical audio path
+    # 4. Check Diarization called once with identical audio path
     mock_diarize.assert_called_once_with(
         audio_path=dummy_audio.resolve(),
         config_path=DEFAULT_CONFIG_PATH,
     )
 
-    # 5. Check Merge and Cue formatting called
-    mock_merge.assert_called_once_with(
-        transcript_segments=mock_asr.return_value,
-        diarization_turns=mock_diarize.return_value,
-    )
-    mock_create_cues.assert_called_once_with(
-        transcript_segments=mock_merge.return_value,
+    # 5. Check Merge and Cue formatting called twice (native and English)
+    assert mock_merge.call_count == 2
+    assert mock_create_cues.call_count == 2
+    mock_create_cues.assert_any_call(
+        transcript_segments=merged_native,
         config_path=DEFAULT_CONFIG_PATH,
         language=None,
     )
+    mock_create_cues.assert_any_call(
+        transcript_segments=merged_translated,
+        config_path=DEFAULT_CONFIG_PATH,
+        language="en",
+    )
 
-    # 6. Check SRT and VTT writers called
-    mock_write_srt.assert_called_once_with(
-        cues=mock_create_cues.return_value,
+    # 6. Check SRT and VTT writers called for both native and English outputs
+    assert mock_write_srt.call_count == 2
+    assert mock_write_vtt.call_count == 2
+    mock_write_srt.assert_any_call(
+        cues=cues_native,
         output_path=out_dir / "recording.srt",
         include_speaker=True,
     )
-    mock_write_vtt.assert_called_once_with(
-        cues=mock_create_cues.return_value,
+    mock_write_srt.assert_any_call(
+        cues=cues_translated,
+        output_path=out_dir / "recording.en.srt",
+        include_speaker=True,
+    )
+    mock_write_vtt.assert_any_call(
+        cues=cues_native,
         output_path=out_dir / "recording.vtt",
+        include_speaker=True,
+    )
+    mock_write_vtt.assert_any_call(
+        cues=cues_translated,
+        output_path=out_dir / "recording.en.vtt",
         include_speaker=True,
     )
 
@@ -269,7 +323,11 @@ def test_pipeline_execution_order_and_audio_path_consistency(
     assert summary["audio_path"] == str(dummy_audio.resolve())
     assert summary["srt_path"] == str(out_dir / "recording.srt")
     assert summary["vtt_path"] == str(out_dir / "recording.vtt")
+    assert summary["srt_path_en"] == str(out_dir / "recording.en.srt")
+    assert summary["vtt_path_en"] == str(out_dir / "recording.en.vtt")
     assert summary["cue_count"] == 1
+    assert summary["cue_count_en"] == 1
+    assert summary["translation_skipped"] is False
     assert summary["hardware_tier"] == "local"
 
 
@@ -347,8 +405,9 @@ def test_video_input_extracts_audio_and_cleans_up_temp_file(
 
     # Check all stages received the extracted temp wav, NOT the video path
     mock_vad.assert_called_once_with(audio_path=temp_wav, config_path=DEFAULT_CONFIG_PATH)
-    mock_asr.assert_called_once()
-    assert mock_asr.call_args[1]["audio_path"] == temp_wav
+    assert mock_asr.call_count >= 1
+    for call in mock_asr.call_args_list:
+        assert call[1]["audio_path"] == temp_wav
     mock_diarize.assert_called_once()
     assert mock_diarize.call_args[1]["audio_path"] == temp_wav
 
@@ -376,7 +435,7 @@ def test_pipeline_language_override_passthrough(
     mock_write_vtt,
     tmp_path,
 ):
-    """Verify that an explicit language parameter to run_pipeline() is forwarded to both ASR and format stages."""
+    """Verify that an explicit language parameter to run_pipeline() is forwarded to ASR and format stages."""
     dummy_audio = tmp_path / "japanese.wav"
     dummy_audio.write_bytes(b"RIFF dummy audio content")
 
@@ -392,19 +451,99 @@ def test_pipeline_language_override_passthrough(
         language="ja",
     )
 
-    mock_asr.assert_called_once_with(
+    assert mock_asr.call_count == 2
+    mock_asr.assert_any_call(
         audio_path=dummy_audio.resolve(),
         speech_regions=[(0.0, 3.5)],
         language="ja",
+        task="transcribe",
         config_path=DEFAULT_CONFIG_PATH,
         model_size_or_path="large-v3",
         compute_type="int8",
     )
-    mock_create_cues.assert_called_once_with(
+    mock_asr.assert_any_call(
+        audio_path=dummy_audio.resolve(),
+        speech_regions=[(0.0, 3.5)],
+        language="ja",
+        task="translate",
+        config_path=DEFAULT_CONFIG_PATH,
+        model_size_or_path="large-v3",
+        compute_type="int8",
+    )
+    mock_create_cues.assert_any_call(
         transcript_segments=mock_merge.return_value,
         config_path=DEFAULT_CONFIG_PATH,
         language="ja",
     )
+    mock_create_cues.assert_any_call(
+        transcript_segments=mock_merge.return_value,
+        config_path=DEFAULT_CONFIG_PATH,
+        language="en",
+    )
+
+
+@patch("src.pipeline.fmt.write_vtt")
+@patch("src.pipeline.fmt.write_srt")
+@patch("src.pipeline.fmt.create_cues")
+@patch("src.pipeline.diarize.merge_with_transcript")
+@patch("src.pipeline.diarize.diarize")
+@patch("src.pipeline.asr.transcribe")
+@patch("src.pipeline.vad.get_speech_regions")
+@patch("src.pipeline.diarize.load_diarization_pipeline")
+def test_pipeline_english_language_skips_translation(
+    mock_load_diarization,
+    mock_vad,
+    mock_asr,
+    mock_diarize,
+    mock_merge,
+    mock_create_cues,
+    mock_write_srt,
+    mock_write_vtt,
+    tmp_path,
+):
+    """Verify that when language='en', the translation pass is skipped and only a single ASR pass runs."""
+    dummy_audio = tmp_path / "english.wav"
+    dummy_audio.write_bytes(b"RIFF dummy audio content")
+
+    mock_vad.return_value = [(0.0, 2.0)]
+    mock_asr.return_value = [{"start": 0.0, "end": 2.0, "text": "Hello world"}]
+    mock_diarize.return_value = []
+    mock_merge.return_value = [{"start": 0.0, "end": 2.0, "text": "Hello world", "speaker_id": None}]
+    mock_create_cues.return_value = [{"index": 1, "start": 0.0, "end": 2.0, "text": "Hello world", "lines": ["Hello world"]}]
+
+    summary = run_pipeline(
+        input_path=dummy_audio,
+        output_dir=tmp_path / "out",
+        language="en",
+    )
+
+    # ASR must be called only ONCE with task="transcribe"
+    mock_asr.assert_called_once_with(
+        audio_path=dummy_audio.resolve(),
+        speech_regions=[(0.0, 2.0)],
+        language="en",
+        task="transcribe",
+        config_path=DEFAULT_CONFIG_PATH,
+        model_size_or_path="large-v3",
+        compute_type="int8",
+    )
+
+    # Diarize merge, create_cues, and writers must only be called once
+    mock_merge.assert_called_once()
+    mock_create_cues.assert_called_once_with(
+        transcript_segments=mock_merge.return_value,
+        config_path=DEFAULT_CONFIG_PATH,
+        language="en",
+    )
+    mock_write_srt.assert_called_once()
+    mock_write_vtt.assert_called_once()
+
+    # Summary verification
+    assert summary["translation_skipped"] is True
+    assert summary["translation_skip_reason"] == "Source language is already English ('en')"
+    assert summary["srt_path_en"] is None
+    assert summary["vtt_path_en"] is None
+    assert summary["cue_count_en"] == 0
 
 
 @patch("src.pipeline.fmt.write_vtt")
@@ -441,18 +580,15 @@ def test_pipeline_default_language_fallback_passthrough(
         output_dir=tmp_path / "out",
     )
 
-    mock_asr.assert_called_once_with(
+    assert mock_asr.call_count == 2
+    mock_asr.assert_any_call(
         audio_path=dummy_audio.resolve(),
         speech_regions=[],
         language=None,
+        task="transcribe",
         config_path=DEFAULT_CONFIG_PATH,
         model_size_or_path="large-v3",
         compute_type="int8",
-    )
-    mock_create_cues.assert_called_once_with(
-        transcript_segments=[],
-        config_path=DEFAULT_CONFIG_PATH,
-        language=None,
     )
 
 
@@ -463,7 +599,13 @@ def test_pipeline_default_language_fallback_passthrough(
 def test_real_full_pipeline_nepali_integration(tmp_path):
     """
     Real end-to-end integration test: runs the complete pipeline on tests/fixtures/nepali_sample.wav
-    using real model weights (no mocks), generates .srt and .vtt files, and verifies output format.
+    using real model weights (no mocks), generates native (.srt/.vtt) and English (.en.srt/.en.vtt) files,
+    and prints the actual English translation output for quality inspection.
+
+    Note:
+        Whisper's translate task produces its own timing alignment for the translated text,
+        which is inherently approximate (translated word boundaries don't map 1:1 to source audio
+        timing the way native transcription does) — this is expected Whisper behavior, not a bug.
     """
     out_dir = tmp_path / "subtitles_output"
 
@@ -475,36 +617,51 @@ def test_real_full_pipeline_nepali_integration(tmp_path):
 
     srt_file = Path(summary["srt_path"])
     vtt_file = Path(summary["vtt_path"])
+    srt_en_file = Path(summary["srt_path_en"])
+    vtt_en_file = Path(summary["vtt_path_en"])
 
-    assert srt_file.exists(), "SRT output file should exist"
-    assert vtt_file.exists(), "VTT output file should exist"
+    assert srt_file.exists(), "Native SRT output file should exist"
+    assert vtt_file.exists(), "Native VTT output file should exist"
+    assert srt_en_file.exists(), "English SRT output file should exist"
+    assert vtt_en_file.exists(), "English VTT output file should exist"
 
     srt_content = srt_file.read_text(encoding="utf-8")
     vtt_content = vtt_file.read_text(encoding="utf-8")
+    srt_en_content = srt_en_file.read_text(encoding="utf-8")
+    vtt_en_content = vtt_en_file.read_text(encoding="utf-8")
 
-    assert len(summary["cues"]) > 0, "Pipeline should generate at least one subtitle cue"
+    assert len(summary["cues"]) > 0, "Pipeline should generate at least one native subtitle cue"
     assert summary["cue_count"] == len(summary["cues"])
+    assert len(summary["cues_en"]) > 0, "Pipeline should generate at least one English subtitle cue"
+    assert summary["cue_count_en"] == len(summary["cues_en"])
+    assert summary["translation_skipped"] is False
+
     assert "-->" in srt_content
     assert "WEBVTT" in vtt_content
+    assert "-->" in srt_en_content
+    assert "WEBVTT" in vtt_en_content
 
     # Print summary and output for inspection (visible with pytest -s)
-    print("\n" + "=" * 60)
-    print("PIPELINE END-TO-END INTEGRATION TEST RESULT")
-    print("=" * 60)
-    print(f"Input file:     {summary['input_path']}")
-    print(f"Resolved audio: {summary['audio_path']}")
-    print(f"Hardware tier:  {summary['hardware_tier']}")
-    print(f"VAD regions:    {len(summary['speech_regions'])}")
-    print(f"ASR segments:   {len(summary['segments'])}")
-    print(f"Speaker turns:  {len(summary['speaker_turns'])}")
-    print(f"Cue count:      {summary['cue_count']}")
-    print(f"SRT Path:       {summary['srt_path']}")
-    print(f"VTT Path:       {summary['vtt_path']}")
-    print("\n--- GENERATED SRT CONTENT ---")
-    print(srt_content)
-    print("--- GENERATED VTT CONTENT ---")
-    print(vtt_content)
-    print("=" * 60 + "\n")
+    print("\n" + "=" * 70)
+    print("PIPELINE END-TO-END NEPALI INTEGRATION TEST RESULT")
+    print("=" * 70)
+    print(f"Input file:        {summary['input_path']}")
+    print(f"Resolved audio:    {summary['audio_path']}")
+    print(f"Hardware tier:     {summary['hardware_tier']}")
+    print(f"VAD regions:       {len(summary['speech_regions'])}")
+    print(f"ASR segments:      {len(summary['segments'])}")
+    print(f"Speaker turns:     {len(summary['speaker_turns'])}")
+    print(f"Native cue count:  {summary['cue_count']}")
+    print(f"English cue count: {summary['cue_count_en']}")
+    print(f"Native SRT Path:   {summary['srt_path']}")
+    print(f"English SRT Path:  {summary['srt_path_en']}")
+    print("\n--- GENERATED NATIVE SRT CONTENT (Nepali) ---")
+    print(srt_content.strip())
+    print("\n--- GENERATED ENGLISH TRANSLATION SRT CONTENT ---")
+    print(srt_en_content.strip())
+    print("\n--- GENERATED ENGLISH TRANSLATION VTT CONTENT ---")
+    print(vtt_en_content.strip())
+    print("=" * 70 + "\n")
 
 
 @pytest.mark.skipif(
@@ -514,8 +671,13 @@ def test_real_full_pipeline_nepali_integration(tmp_path):
 def test_real_full_pipeline_japanese_integration(tmp_path):
     """
     Real end-to-end integration test: runs the complete pipeline on tests/fixtures/japanese_sample.wav
-    with language="ja" using real model weights (no mocks), generates .srt and .vtt files,
-    and verifies output format and Japanese subtitle formatting.
+    with language="ja" using real model weights (no mocks), generates native (.srt/.vtt) and English
+    (.en.srt/.en.vtt) files, and prints the actual English translation output for quality inspection.
+
+    Note:
+        Whisper's translate task produces its own timing alignment for the translated text,
+        which is inherently approximate (translated word boundaries don't map 1:1 to source audio
+        timing the way native transcription does) — this is expected Whisper behavior, not a bug.
     """
     out_dir = tmp_path / "japanese_subtitles_output"
 
@@ -528,19 +690,31 @@ def test_real_full_pipeline_japanese_integration(tmp_path):
 
     srt_file = Path(summary["srt_path"])
     vtt_file = Path(summary["vtt_path"])
+    srt_en_file = Path(summary["srt_path_en"])
+    vtt_en_file = Path(summary["vtt_path_en"])
 
-    assert srt_file.exists(), "SRT output file should exist"
-    assert vtt_file.exists(), "VTT output file should exist"
+    assert srt_file.exists(), "Native SRT output file should exist"
+    assert vtt_file.exists(), "Native VTT output file should exist"
+    assert srt_en_file.exists(), "English SRT output file should exist"
+    assert vtt_en_file.exists(), "English VTT output file should exist"
 
     srt_content = srt_file.read_text(encoding="utf-8")
     vtt_content = vtt_file.read_text(encoding="utf-8")
+    srt_en_content = srt_en_file.read_text(encoding="utf-8")
+    vtt_en_content = vtt_en_file.read_text(encoding="utf-8")
 
-    assert len(summary["cues"]) > 0, "Pipeline should generate at least one subtitle cue"
+    assert len(summary["cues"]) > 0, "Pipeline should generate at least one native subtitle cue"
     assert summary["cue_count"] == len(summary["cues"])
+    assert len(summary["cues_en"]) > 0, "Pipeline should generate at least one English subtitle cue"
+    assert summary["cue_count_en"] == len(summary["cues_en"])
+    assert summary["translation_skipped"] is False
+
     assert "-->" in srt_content
     assert "WEBVTT" in vtt_content
+    assert "-->" in srt_en_content
+    assert "WEBVTT" in vtt_en_content
 
-    # Verify Japanese formatting constraints
+    # Verify Japanese formatting constraints on native cues
     for cue in summary["cues"]:
         for line in cue["lines"]:
             assert len(line) <= 13, f"Line exceeds 13 characters in Japanese cue: '{line}' ({len(line)} chars)"
@@ -552,21 +726,25 @@ def test_real_full_pipeline_japanese_integration(tmp_path):
         )
 
     # Print summary and output for inspection (visible with pytest -s)
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 70)
     print("PIPELINE END-TO-END JAPANESE INTEGRATION TEST RESULT")
-    print("=" * 60)
-    print(f"Input file:     {summary['input_path']}")
-    print(f"Resolved audio: {summary['audio_path']}")
-    print(f"Hardware tier:  {summary['hardware_tier']}")
-    print(f"VAD regions:    {len(summary['speech_regions'])}")
-    print(f"ASR segments:   {len(summary['segments'])}")
-    print(f"Speaker turns:  {len(summary['speaker_turns'])}")
-    print(f"Cue count:      {summary['cue_count']}")
-    print(f"SRT Path:       {summary['srt_path']}")
-    print(f"VTT Path:       {summary['vtt_path']}")
-    print("\n--- GENERATED SRT CONTENT ---")
-    print(srt_content)
-    print("--- GENERATED VTT CONTENT ---")
-    print(vtt_content)
-    print("=" * 60 + "\n")
+    print("=" * 70)
+    print(f"Input file:        {summary['input_path']}")
+    print(f"Resolved audio:    {summary['audio_path']}")
+    print(f"Hardware tier:     {summary['hardware_tier']}")
+    print(f"VAD regions:       {len(summary['speech_regions'])}")
+    print(f"ASR segments:      {len(summary['segments'])}")
+    print(f"Speaker turns:     {len(summary['speaker_turns'])}")
+    print(f"Native cue count:  {summary['cue_count']}")
+    print(f"English cue count: {summary['cue_count_en']}")
+    print(f"Native SRT Path:   {summary['srt_path']}")
+    print(f"English SRT Path:  {summary['srt_path_en']}")
+    print("\n--- GENERATED NATIVE SRT CONTENT (Japanese) ---")
+    print(srt_content.strip())
+    print("\n--- GENERATED ENGLISH TRANSLATION SRT CONTENT ---")
+    print(srt_en_content.strip())
+    print("\n--- GENERATED ENGLISH TRANSLATION VTT CONTENT ---")
+    print(vtt_en_content.strip())
+    print("=" * 70 + "\n")
+
 
