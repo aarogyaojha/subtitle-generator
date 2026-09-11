@@ -83,6 +83,12 @@ def test_config_fallback_on_corrupt_yaml(tmp_path: Path, caplog: pytest.LogCaptu
     assert "Failed to parse ASR configuration" in caplog.text
 
 
+def test_transcribe_invalid_task_raises_value_error(dummy_audio_file: Path):
+    """Verify that an invalid task argument raises ValueError immediately."""
+    with pytest.raises(ValueError, match="Invalid task 'summarize'"):
+        transcribe(dummy_audio_file, task="summarize")
+
+
 def test_transcribe_mocked_model_and_formatting(dummy_audio_file: Path, tmp_path: Path):
     """Verify that transcribe correctly passes arguments to WhisperModel and formats output segments."""
     mock_word = MagicMock()
@@ -130,6 +136,7 @@ def test_transcribe_mocked_model_and_formatting(dummy_audio_file: Path, tmp_path
         mock_model.transcribe.assert_called_once_with(
             str(dummy_audio_file),
             language="ne",
+            task="transcribe",
             word_timestamps=True,
             clip_timestamps=[0.5, 1.8, 2.0, 3.5],
         )
@@ -144,6 +151,36 @@ def test_transcribe_mocked_model_and_formatting(dummy_audio_file: Path, tmp_path
         assert seg["no_speech_prob"] == 0.01
         assert len(seg["words"]) == 1
         assert seg["words"][0]["word"] == " नमस्ते"
+
+
+def test_transcribe_translate_task_passthrough(dummy_audio_file: Path):
+    """Verify that task='translate' is correctly forwarded to WhisperModel.transcribe()."""
+    mock_segment = MagicMock()
+    mock_segment.start = 0.0
+    mock_segment.end = 2.0
+    mock_segment.text = "Hello world"
+    mock_segment.avg_logprob = -0.1
+    mock_segment.no_speech_prob = 0.0
+    mock_segment.words = []
+
+    mock_model = MagicMock()
+    mock_model.transcribe.return_value = ([mock_segment], MagicMock())
+
+    with patch("src.asr.load_asr_model", return_value=mock_model):
+        segments = transcribe(
+            dummy_audio_file,
+            language="ne",
+            task="translate",
+        )
+
+        mock_model.transcribe.assert_called_once_with(
+            str(dummy_audio_file),
+            language="ne",
+            task="translate",
+            word_timestamps=True,
+        )
+        assert len(segments) == 1
+        assert segments[0]["text"] == "Hello world"
 
 
 def test_real_nepali_transcription_integration(caplog: pytest.LogCaptureFixture):

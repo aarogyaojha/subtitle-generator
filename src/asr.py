@@ -116,6 +116,7 @@ def transcribe(
     device: Optional[str] = None,
     compute_type: Optional[str] = None,
     language: Optional[str] = None,
+    task: str = "transcribe",
     word_timestamps: bool = True,
 ) -> list[dict[str, Any]]:
     """
@@ -135,6 +136,7 @@ def transcribe(
         device: Optional override for compute device ('cuda', 'cpu', 'auto').
         compute_type: Optional override for quantization ('int8', 'float16').
         language: Optional language code override (e.g., 'ne', 'ja').
+        task: Task to execute ('transcribe' or 'translate'). Defaults to 'transcribe'.
         word_timestamps: Whether to extract word-level timing. Defaults to True.
 
     Returns:
@@ -149,7 +151,11 @@ def transcribe(
 
     Raises:
         FileNotFoundError: If audio_path does not exist.
+        ValueError: If task is not 'transcribe' or 'translate'.
     """
+    if task not in ("transcribe", "translate"):
+        raise ValueError(f"Invalid task '{task}'. Expected 'transcribe' or 'translate'.")
+
     audio_file = Path(audio_path)
     if not audio_file.exists():
         raise FileNotFoundError(f"Audio file not found: {audio_file}")
@@ -173,15 +179,16 @@ def transcribe(
 
     transcribe_kwargs: dict[str, Any] = {
         "language": final_language,
+        "task": task,
         "word_timestamps": word_timestamps,
     }
 
     if speech_regions is not None:
         clip_timestamps = [float(coord) for region in speech_regions for coord in region]
         transcribe_kwargs["clip_timestamps"] = clip_timestamps
-        logger.info("Transcribing with VAD clip boundaries: %s", speech_regions)
+        logger.info("Running ASR (%s) with VAD clip boundaries: %s", task, speech_regions)
     else:
-        logger.info("Transcribing entire audio file (whole-file mode).")
+        logger.info("Running ASR (%s) on entire audio file (whole-file mode).", task)
 
     raw_segments, _ = model.transcribe(str(audio_file), **transcribe_kwargs)
 
