@@ -2,7 +2,7 @@
 Command-line interface (CLI) for the Subtitle Generator pipeline.
 
 Usage:
-  python src/cli.py <input_file> [options]
+  python -m src.cli <input_file> [options]
 
 Options:
   -o, --output-dir      Directory to save output .srt/.vtt files.
