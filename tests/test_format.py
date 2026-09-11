@@ -667,6 +667,7 @@ def test_format_config_explicit_language_param_precedence(tmp_path: Path):
 
 
 
+@pytest.mark.real_model
 def test_real_full_pipeline_formatting_integration(tmp_path: Path):
     """
     Real Integration Test:
@@ -719,6 +720,7 @@ def test_real_full_pipeline_formatting_integration(tmp_path: Path):
     assert any(cue["speaker_id"] is not None for cue in cues)
 
 
+@pytest.mark.real_model
 def test_real_japanese_formatting_integration(tmp_path: Path):
     """
     Real Integration Test:

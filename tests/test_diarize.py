@@ -216,6 +216,7 @@ def test_merge_with_transcript_empty_inputs():
     assert merged_empty_trans == []
 
 
+@pytest.mark.real_model
 def test_real_nepali_diarization_and_merge_integration():
     """
     Real integration test on tests/fixtures/nepali_sample.wav.
@@ -270,6 +271,7 @@ def test_real_nepali_diarization_and_merge_integration():
     logger.info(report_str)
 
 
+@pytest.mark.real_model
 def test_real_japanese_diarization_and_merge_integration():
     """
     Real integration test on tests/fixtures/japanese_sample.wav.
@@ -319,6 +321,7 @@ def test_real_japanese_diarization_and_merge_integration():
     logger.info(report_str)
 
 
+@pytest.mark.real_model
 def test_real_multispeaker_diarization_accuracy():
     """
     Real integration & structural accuracy test on tests/fixtures/nepali_multispeaker_sample.wav.

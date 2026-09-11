@@ -183,6 +183,7 @@ def test_transcribe_translate_task_passthrough(dummy_audio_file: Path):
         assert segments[0]["text"] == "Hello world"
 
 
+@pytest.mark.real_model
 def test_real_nepali_transcription_integration(caplog: pytest.LogCaptureFixture):
     """
     Integration test: run real Whisper transcription on tests/fixtures/nepali_sample.wav.
@@ -225,6 +226,7 @@ def test_real_nepali_transcription_integration(caplog: pytest.LogCaptureFixture)
     logger.info(comparison_report)
 
 
+@pytest.mark.real_model
 def test_real_japanese_transcription_integration(caplog: pytest.LogCaptureFixture):
     """
     Integration test: run real Whisper transcription on tests/fixtures/japanese_sample.wav.

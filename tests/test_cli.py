@@ -265,6 +265,7 @@ def test_unexpected_exception_propagates(mock_run_pipeline):
         main(["sample.wav"])
 
 
+@pytest.mark.real_model
 @pytest.mark.skipif(
     not NEPALI_AUDIO_FIXTURE.exists(),
     reason="Real Nepali audio fixture required for full integration test",

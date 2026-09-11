@@ -592,6 +592,7 @@ def test_pipeline_default_language_fallback_passthrough(
     )
 
 
+@pytest.mark.real_model
 @pytest.mark.skipif(
     not NEPALI_AUDIO_FIXTURE.exists(),
     reason="Real Nepali audio fixture required for full integration test",
@@ -599,13 +600,8 @@ def test_pipeline_default_language_fallback_passthrough(
 def test_real_full_pipeline_nepali_integration(tmp_path):
     """
     Real end-to-end integration test: runs the complete pipeline on tests/fixtures/nepali_sample.wav
-    using real model weights (no mocks), generates native (.srt/.vtt) and English (.en.srt/.en.vtt) files,
-    and prints the actual English translation output for quality inspection.
-
-    Note:
-        Whisper's translate task produces its own timing alignment for the translated text,
-        which is inherently approximate (translated word boundaries don't map 1:1 to source audio
-        timing the way native transcription does) — this is expected Whisper behavior, not a bug.
+    using real model weights (no mocks), generates native (.srt/.vtt) and English (.en.srt/.en.vtt)
+    files, and verifies structural and content requirements.
     """
     out_dir = tmp_path / "subtitles_output"
 
@@ -664,6 +660,7 @@ def test_real_full_pipeline_nepali_integration(tmp_path):
     print("=" * 70 + "\n")
 
 
+@pytest.mark.real_model
 @pytest.mark.skipif(
     not JAPANESE_AUDIO_FIXTURE.exists(),
     reason="Real Japanese audio fixture required for full integration test",
@@ -748,6 +745,7 @@ def test_real_full_pipeline_japanese_integration(tmp_path):
     print("=" * 70 + "\n")
 
 
+@pytest.mark.real_model
 @pytest.mark.skipif(
     not NEPALI_MULTISPEAKER_AUDIO_FIXTURE.exists(),
     reason="Real Nepali multi-speaker audio fixture required for integration test",

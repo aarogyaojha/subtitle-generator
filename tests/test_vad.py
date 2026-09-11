@@ -64,8 +64,12 @@ def test_empty_audio_returns_empty_list(empty_audio_file: Path):
 
 def test_silent_audio_returns_empty_list(silent_audio_file: Path):
     """Verify that pure silent audio returns an empty list of speech regions."""
-    regions = get_speech_regions(silent_audio_file)
-    assert regions == []
+    mock_model = MagicMock()
+    mock_get_speech_timestamps = MagicMock(return_value=[])
+    mock_utils = (mock_get_speech_timestamps,)
+    with patch("src.vad.load_vad_model", return_value=(mock_model, mock_utils)):
+        regions = get_speech_regions(silent_audio_file)
+        assert regions == []
 
 
 def test_config_threshold_overrides_from_yaml(tmp_path: Path):
@@ -156,6 +160,7 @@ def test_get_speech_regions_respects_threshold_overrides_and_mock(silent_audio_f
         )
 
 
+@pytest.mark.real_model
 def test_real_nepali_speech_returns_speech_regions():
     """Verify that get_speech_regions detects speech in the real Nepali test fixture."""
     fixture_path = Path(__file__).resolve().parent / "fixtures" / "nepali_sample.wav"
@@ -170,6 +175,7 @@ def test_real_nepali_speech_returns_speech_regions():
         assert end > start
 
 
+@pytest.mark.real_model
 def test_real_japanese_speech_returns_speech_regions():
     """Verify that get_speech_regions detects speech in the real Japanese test fixture."""
     fixture_path = Path(__file__).resolve().parent / "fixtures" / "japanese_sample.wav"
