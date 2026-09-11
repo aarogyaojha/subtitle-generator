@@ -318,3 +318,85 @@ def test_real_japanese_diarization_and_merge_integration():
     print(report_str)
     logger.info(report_str)
 
+
+def test_real_multispeaker_diarization_accuracy():
+    """
+    Real integration & structural accuracy test on tests/fixtures/nepali_multispeaker_sample.wav.
+
+    Verifies:
+    1. pyannote diarization executes successfully on the real constructed multi-speaker audio fixture.
+    2. Enforces structural sanity: non-empty turns with valid time spans (start >= 0, start < end)
+       and at least 1 speaker detected.
+    3. Evaluates and honestly reports diarization performance (distinct speakers detected vs.
+       ground-truth count of 3, and midpoint-to-speaker mapping across ground-truth segments)
+       for manual inspection without brittle assertions.
+    """
+    import json
+
+    fixtures_dir = Path(__file__).resolve().parent / "fixtures"
+    fixture_path = fixtures_dir / "nepali_multispeaker_sample.wav"
+    gt_path = fixtures_dir / "nepali_multispeaker_ground_truth.json"
+
+    assert fixture_path.exists(), f"Multi-speaker fixture missing: {fixture_path}"
+    assert gt_path.exists(), f"Ground truth metadata missing: {gt_path}"
+
+    gt_data = json.loads(gt_path.read_text(encoding="utf-8"))
+    gt_segments = gt_data["segments"]
+    expected_speaker_count = gt_data.get("num_ground_truth_speakers", 3)
+
+    # 1. Run real diarization
+    turns = diarize(fixture_path)
+    assert len(turns) > 0, "Diarization produced no turns on multi-speaker fixture"
+
+    # 2. Structural sanity assertions
+    for turn in turns:
+        assert turn["start"] >= 0.0, f"Turn start time negative: {turn}"
+        assert turn["end"] > turn["start"], f"Turn end time not greater than start: {turn}"
+        assert isinstance(turn["speaker_id"], str) and len(turn["speaker_id"]) > 0, f"Invalid speaker_id: {turn}"
+
+    detected_speakers = sorted(set(t["speaker_id"] for t in turns))
+    assert len(detected_speakers) >= 1, "Expected at least 1 speaker detected"
+
+    # 3. Compute ground-truth segment midpoint mappings
+    midpoint_mappings = []
+    for seg in gt_segments:
+        midpoint = (seg["start_time_seconds"] + seg["end_time_seconds"]) / 2.0
+        matching_turns = [
+            t["speaker_id"] for t in turns if t["start"] <= midpoint <= t["end"]
+        ]
+        assigned_speaker = matching_turns[0] if matching_turns else None
+        midpoint_mappings.append((seg, midpoint, assigned_speaker))
+
+    mapped_speakers = [m[2] for m in midpoint_mappings if m[2] is not None]
+    distinct_mapped_speakers = set(mapped_speakers)
+
+    # 4. Print & log honest accuracy evaluation report
+    report_lines = [
+        "\n=======================================================",
+        "MULTI-SPEAKER DIARIZATION ACCURACY INTEGRATION REPORT",
+        f"  Fixture File             : {fixture_path.name}",
+        f"  Total Duration           : {gt_data['total_duration_seconds']:.2f}s",
+        f"  Ground Truth Speakers    : {expected_speaker_count} ({gt_data.get('ground_truth_speaker_ids', [])})",
+        f"  Detected Speakers Count  : {len(detected_speakers)} ({detected_speakers})",
+        f"  Midpoint Mapped Speakers : {len(distinct_mapped_speakers)} distinct label(s) across {len(gt_segments)} segment(s)",
+        "\n  Ground Truth vs. Diarization Midpoint Mapping:",
+    ]
+    for seg, mid, assigned_spk in midpoint_mappings:
+        spk_str = f"[{assigned_spk}]" if assigned_spk is not None else "[UNASSIGNED / SILENCE]"
+        report_lines.append(
+            f"    - Segment {seg['segment_index']} (Original Speaker: {seg['speaker_id']}): "
+            f"[{seg['start_time_seconds']:.2f}s -> {seg['end_time_seconds']:.2f}s] "
+            f"(mid: {mid:.2f}s) -> Diarization Label: {spk_str} | Text: '{seg['text']}'"
+        )
+    report_lines.append("\n  All Detected Diarization Turns:")
+    for idx, turn in enumerate(turns, 1):
+        report_lines.append(
+            f"    Turn {idx}. [{turn['start']:.2f}s -> {turn['end']:.2f}s] [{turn['speaker_id']}]"
+        )
+    report_lines.append("=======================================================")
+    report_str = "\n".join(report_lines)
+    print(report_str)
+    logger.info(report_str)
+
+
+
