@@ -119,6 +119,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         distinct_speakers = len(set(turn["speaker_id"] for turn in speaker_turns))
 
         print("\nSubtitle Generation Complete:")
+        print(f"  - Hardware tier: {summary.get('hardware_tier')}")
         print(f"  - Total cues generated: {summary.get('cue_count', 0)}")
         print(f"  - Distinct speakers detected: {distinct_speakers}")
         print(f"  - SRT output: {summary.get('srt_path')}")
@@ -129,11 +130,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     except (GatedRepoError, HfHubHTTPError) as e:
         print(
             f"Hugging Face Authentication / Gated Access Error:\n{e}\n"
-            "Please verify that you have accepted the pyannote model license on Hugging Face "
-            "and authenticated via `hf auth login` or set the HF_TOKEN environment variable.",
+            "Please ensure you have accepted the model conditions on Hugging Face "
+            "and run `hf auth login`.",
             file=sys.stderr,
         )
         return 1
