@@ -1,0 +1,53 @@
+{
+  "fixture_name": "nepali_multispeaker_sample.wav",
+  "total_duration_seconds": 15.4,
+  "sample_rate_hz": 16000,
+  "channels": 1,
+  "num_ground_truth_speakers": 3,
+  "ground_truth_speaker_ids": [
+    "b70ea",
+    "423bf",
+    "d863b"
+  ],
+  "segments": [
+    {
+      "segment_index": 1,
+      "speaker_id": "b70ea",
+      "utterance_id": "595c8c5ef6",
+      "start_time_seconds": 0.0,
+      "end_time_seconds": 4.8,
+      "duration_seconds": 4.8,
+      "text": "अकबरीको लेखक फजलले"
+    },
+    {
+      "segment_index": 2,
+      "speaker_id": "423bf",
+      "utterance_id": "575764c34a",
+      "start_time_seconds": 6.05,
+      "end_time_seconds": 9.45,
+      "duration_seconds": 3.4,
+      "text": "अक्टोबर महिना आश्विन"
+    },
+    {
+      "segment_index": 3,
+      "speaker_id": "d863b",
+      "utterance_id": "5c7c792b81",
+      "start_time_seconds": 10.7,
+      "end_time_seconds": 15.4,
+      "duration_seconds": 4.7,
+      "text": "अक्षता गङ्गाजीमा चढाइदिए"
+    }
+  ],
+  "silence_intervals": [
+    {
+      "start_time_seconds": 4.8,
+      "end_time_seconds": 6.05,
+      "duration_seconds": 1.25
+    },
+    {
+      "start_time_seconds": 9.45,
+      "end_time_seconds": 10.7,
+      "duration_seconds": 1.25
+    }
+  ]
+}
