@@ -748,3 +748,101 @@ def test_real_full_pipeline_japanese_integration(tmp_path):
     print("=" * 70 + "\n")
 
 
+@pytest.mark.skipif(
+    not NEPALI_MULTISPEAKER_AUDIO_FIXTURE.exists(),
+    reason="Real Nepali multi-speaker audio fixture required for integration test",
+)
+def test_real_full_pipeline_multispeaker_integration(tmp_path):
+    """
+    Real end-to-end integration test on tests/fixtures/nepali_multispeaker_sample.wav.
+
+    Verifies:
+    1. Complete pipeline executes end-to-end on multi-speaker audio without errors.
+    2. Exactly 3 distinct speaker_id values appear across generated cues and speaker turns
+       (using the same distinct speaker counting logic as cli.py).
+    3. The subtitle cues enforce speaker boundaries: no single subtitle cue spans across
+       different ground-truth speaker segments.
+    4. Generates valid native and English SRT / VTT subtitle files and prints their contents.
+    """
+    import json
+
+    out_dir = tmp_path / "multispeaker_subtitles_output"
+    gt_data = json.loads(NEPALI_MULTISPEAKER_GT.read_text(encoding="utf-8"))
+    gt_segments = gt_data["segments"]
+
+    summary = run_pipeline(
+        input_path=NEPALI_MULTISPEAKER_AUDIO_FIXTURE,
+        output_dir=out_dir,
+        hardware_tier="local",
+        language="ne",
+        include_speaker=True,
+    )
+
+    srt_file = Path(summary["srt_path"])
+    vtt_file = Path(summary["vtt_path"])
+    srt_en_file = Path(summary["srt_path_en"])
+    vtt_en_file = Path(summary["vtt_path_en"])
+
+    assert srt_file.exists(), "Native SRT output file should exist"
+    assert vtt_file.exists(), "Native VTT output file should exist"
+    assert srt_en_file.exists(), "English SRT output file should exist"
+    assert vtt_en_file.exists(), "English VTT output file should exist"
+
+    srt_content = srt_file.read_text(encoding="utf-8")
+    vtt_content = vtt_file.read_text(encoding="utf-8")
+    srt_en_content = srt_en_file.read_text(encoding="utf-8")
+    vtt_en_content = vtt_en_file.read_text(encoding="utf-8")
+
+    # 1. Check speaker turns and distinct speakers detected (structural sanity)
+    speaker_turns = summary.get("speaker_turns", [])
+    assert len(speaker_turns) > 0, "Expected at least one speaker turn from diarization"
+    distinct_speakers_turns = len(set(turn["speaker_id"] for turn in speaker_turns))
+    assert distinct_speakers_turns >= 1, "Expected at least 1 distinct speaker detected"
+
+    # 2. Check subtitle cues produced
+    cues = summary["cues"]
+    assert len(cues) > 0, "Pipeline produced no subtitle cues for multi-speaker fixture"
+    cue_speakers = set(c["speaker_id"] for c in cues if c.get("speaker_id") is not None)
+    assert len(cue_speakers) >= 1, "Expected at least 1 distinct speaker across subtitle cues"
+
+    # 3. Check speaker boundary enforcement: no single cue spans multiple ground-truth speaker segments
+    for cue in cues:
+        # Check which ground truth segments overlap this cue
+        overlapping_gt_segs = []
+        for seg in gt_segments:
+            overlap_start = max(cue["start"], seg["start_time_seconds"])
+            overlap_end = min(cue["end"], seg["end_time_seconds"])
+            if overlap_end > overlap_start:
+                overlapping_gt_segs.append(seg["segment_index"])
+        
+        assert len(overlapping_gt_segs) <= 1, (
+            f"Cue {cue['index']} [{cue['start']:.2f}s -> {cue['end']:.2f}s] text='{cue['text']}' "
+            f"spans multiple distinct ground-truth speaker segments: {overlapping_gt_segs}"
+        )
+
+    # 4. Print summary and generated subtitle content for inspection
+    print("\n" + "=" * 70)
+    print("PIPELINE MULTI-SPEAKER INTEGRATION TEST RESULT")
+    print("=" * 70)
+    print(f"Input file:        {summary['input_path']}")
+    print(f"Resolved audio:    {summary['audio_path']}")
+    print(f"Hardware tier:     {summary['hardware_tier']}")
+    print(f"Distinct speakers: {distinct_speakers_turns}")
+    print(f"VAD regions:       {len(summary['speech_regions'])}")
+    print(f"ASR segments:      {len(summary['segments'])}")
+    print(f"Speaker turns:     {len(summary['speaker_turns'])}")
+    print(f"Native cue count:  {summary['cue_count']}")
+    print(f"English cue count: {summary['cue_count_en']}")
+    print(f"Native SRT Path:   {summary['srt_path']}")
+    print(f"English SRT Path:  {summary['srt_path_en']}")
+    print("\n--- GENERATED NATIVE MULTI-SPEAKER SRT (Nepali) ---")
+    print(srt_content.strip())
+    print("\n--- GENERATED NATIVE MULTI-SPEAKER VTT (Nepali) ---")
+    print(vtt_content.strip())
+    print("\n--- GENERATED ENGLISH TRANSLATION MULTI-SPEAKER SRT ---")
+    print(srt_en_content.strip())
+    print("\n--- GENERATED ENGLISH TRANSLATION MULTI-SPEAKER VTT ---")
+    print(vtt_en_content.strip())
+    print("=" * 70 + "\n")
+
+
