@@ -26,6 +26,27 @@ Existing open-source ASR implementations frequently suffer from specific edge-ca
 
 ---
 
+## Known Limitations & Research Backlog
+
+### Speaker Diarization Limitation
+- Passing `num_speakers` explicitly to `diarize.diarize()` (already a supported parameter) is the most reliable fix for pyannote's speaker-merging errors — but this only works when the speaker count is known ahead of time, as it was for our controlled test fixture.
+- For the project's actual target use case — arbitrary movies, videos, podcasts — the speaker count is **not** known in advance, so this mitigation does not apply. pyannote must estimate the count itself in that case, which is a harder problem and where the speaker-merging error found during testing is most likely to occur in real usage.
+- No clean fix currently exists for the unknown-speaker-count case. Tuning pyannote's clustering threshold is the likely next research avenue, but doing that properly requires a validation dataset separate from whatever fixture is used for regression testing (to avoid overfitting the threshold to one specific test case).
+- **Status:** Open research item, not yet started.
+
+### Context-Dependent Word-Sense Correction (v2 Direction Decided)
+- **Direction chosen:** Research running a small local LLM (e.g. via `llama.cpp` or Ollama) to re-process low-confidence ASR segments (confidence score already computed in `src/asr.py`) using surrounding transcript context, rather than Whisper-only re-prompting or a cloud LLM API.
+- **Real constraint to solve:** The `local` hardware tier already uses ~2GB of the target 4GB VRAM budget for VAD + ASR + diarization combined. Adding local LLM inference on top of that will likely require either a very small model (needs evaluation) or restricting this feature to the `colab`/cloud tier only until a small enough local model is validated to fit the 4GB budget.
+- **Noted synergy:** The same local LLM investment is also a candidate upgrade path for translation quality (see below) — worth evaluating both together rather than building two separate LLM integrations independently.
+- **Status:** Direction decided, not yet implemented.
+
+### Translation Quality Upgrade Path
+- Whisper's built-in `task="translate"` was chosen as the v1 approach (validated, working, zero new dependencies).
+- If translation quality proves insufficient on more/longer real content, NLLB (text-based translation, reuses native-pass timestamps) or the local LLM being researched for word-sense correction above are both candidate upgrades.
+- **Status:** Current approach validated and working; upgrade only if a real quality gap is found on more content.
+
+---
+
 ## Planned Architecture (v1 Audio-Only)
 
 ```
